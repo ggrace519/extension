@@ -170,6 +170,207 @@
   };
 
   // ========================================================================
+  // ENHANCEMENT: Summarize Page Feature
+  // ========================================================================
+  // Summarizes the content of the current page using AI. Uses a specialized
+  // system prompt to ignore navigation, ads, and other non-content elements.
+  // Displays the summary in the response popup.
+  // ========================================================================
+  // Function to summarize page content
+  const summarizePage = async (content: string) => {
+    if (!content || content.trim().length === 0) {
+      console.warn("Extension: No content to summarize");
+      errorMessage = "No content could be extracted from this page.";
+      showError = true;
+      showResponse = true;
+      setTimeout(() => {
+        showError = false;
+        errorMessage = "";
+      }, 5000);
+      return;
+    }
+
+    // Get current config
+    let currentUrl = url;
+    let currentKey = key;
+    let currentModel = model;
+
+    try {
+      const storedConfig = await chrome.storage.local.get(["url", "key", "model"]);
+      if (storedConfig.url) currentUrl = storedConfig.url;
+      if (storedConfig.model) currentModel = storedConfig.model;
+      
+      // Decrypt API key if it exists
+      if (storedConfig.key) {
+        try {
+          const decryptionResponse = await chrome.runtime.sendMessage({
+            action: "decryptApiKey",
+            encryptedApiKey: storedConfig.key
+          });
+          
+          if (decryptionResponse.error) {
+            console.error("Extension: Failed to decrypt API key:", decryptionResponse.error);
+            currentKey = storedConfig.key; // Use as-is (backward compatibility)
+          } else {
+            currentKey = decryptionResponse.decrypted;
+          }
+        } catch (error) {
+          console.error("Extension: Error decrypting API key:", error);
+          currentKey = storedConfig.key; // Use as-is (backward compatibility)
+        }
+      }
+    } catch (error) {
+      console.error("Extension: Error getting config:", error);
+    }
+
+    // Check if we have valid config
+    if (!currentUrl || !currentKey || !currentModel) {
+      console.warn("Extension: Missing configuration. Please configure the extension first.");
+      showConfig = true;
+      return;
+    }
+
+    // Initialize conversation with specialized system prompt for page summarization
+    responseQuery = "Summarize this page";
+    responseText = "";
+    conversationHistory = [
+      {
+        role: "system",
+        content: "You are a helpful assistant that summarizes web page content. Ignore navigation menus, advertisements, cookie notices, footers, headers, and other non-content elements. Focus on the main article or content of the page. Provide a clear, concise summary."
+      },
+      {
+        role: "user",
+        content: content.substring(0, 50000) // Limit content length
+      }
+    ];
+    showResponse = true;
+    isStreaming = true;
+    showError = false;
+    errorMessage = "";
+
+    // Determine endpoint
+    const isOpenAI = models.length > 0 
+      ? models.find((m) => m.id === currentModel)?.owned_by === "openai" ?? false
+      : false;
+    
+    const endpoint = isOpenAI ? `${currentUrl}/openai` : `${currentUrl}/ollama/v1`;
+
+    try {
+      const [res, controller] = await generateOpenAIChatCompletion(
+        currentKey,
+        {
+          model: currentModel,
+          messages: conversationHistory,
+          stream: true,
+        },
+        endpoint
+      );
+
+      if (res && res.ok) {
+        const reader = res.body
+          .pipeThrough(new TextDecoderStream())
+          .pipeThrough(splitStream("\n"))
+          .getReader();
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) {
+            break;
+          }
+
+          try {
+            let lines = value.split("\n");
+            for (const line of lines) {
+              if (line !== "") {
+                if (line === "data: [DONE]") {
+                  // Will handle after loop
+                } else {
+                  let data = JSON.parse(line.replace(/^data: /, ""));
+                  if (!("request_id" in data)) {
+                    const content = data.choices[0].delta.content ?? "";
+                    responseText += content;
+                    
+                    if (responseContainer) {
+                      setTimeout(() => {
+                        responseContainer.scrollTop = responseContainer.scrollHeight;
+                      }, 0);
+                    }
+                  }
+                }
+              }
+            }
+          } catch (error) {
+            console.log(error);
+          }
+        }
+        
+        // Add assistant response to conversation history after streaming completes
+        try {
+          if (responseText) {
+            const alreadyInHistory = conversationHistory.some(
+              m => m.role === "assistant" && m.content === responseText
+            );
+            
+            if (!alreadyInHistory) {
+              conversationHistory = [...conversationHistory, {
+                role: "assistant",
+                content: responseText,
+              }];
+            }
+          }
+          isStreaming = false;
+          responseText = "";
+          
+          // Focus the follow-up input after response completes
+          setTimeout(() => {
+            const inputElement = document.getElementById("open-webui-followup-input");
+            if (inputElement) {
+              inputElement.focus();
+            }
+          }, 100);
+        } catch (historyError) {
+          console.error("Extension: Error adding response to history:", historyError);
+          isStreaming = false;
+        }
+      } else {
+        console.error("Extension: API request failed:", res);
+        showResponse = false;
+        isStreaming = false;
+        errorMessage = "Failed to get summary. Please check your configuration.";
+        showError = true;
+        setTimeout(() => {
+          showError = false;
+          errorMessage = "";
+        }, 5000);
+      }
+    } catch (error) {
+      console.error("Extension: Error summarizing page:", error);
+      
+      // Check if it's a rate limit error
+      const errorMsg = error?.message || String(error);
+      if (errorMsg.includes("Rate limit exceeded")) {
+        errorMessage = errorMsg;
+        showError = true;
+        showResponse = true;
+        setTimeout(() => {
+          showError = false;
+          errorMessage = "";
+        }, 5000);
+      } else {
+        errorMessage = `Error: ${errorMsg}`;
+        showError = true;
+        showResponse = true;
+        setTimeout(() => {
+          showError = false;
+          errorMessage = "";
+        }, 5000);
+      }
+      
+      isStreaming = false;
+    }
+  };
+
+  // ========================================================================
   // ENHANCEMENT: Continue in OpenWebUI Feature
   // ========================================================================
   // Transfers the current conversation from the extension to the full OpenWebUI
@@ -489,12 +690,34 @@
     };
     window.addEventListener("open-webui-toggle-search", handleToggleEvent);
     
+    // Listen for custom event for summarize page (fallback)
+    const handleSummarizeEvent = (event: CustomEvent) => {
+      if (event.detail && event.detail.content) {
+        summarizePage(event.detail.content);
+      }
+    };
+    window.addEventListener("open-webui-summarize-page", handleSummarizeEvent as EventListener);
+    
     // Also listen for messages as fallback
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       console.log("Content script received message:", request);
       if (request.action === "toggleSearch") {
         console.log("Toggling search interface");
         toggleSearch();
+        sendResponse({ success: true });
+      } else if (request.action === "summarizePage") {
+        if (request.error) {
+          console.error("Extension: Error from background script:", request.error);
+          errorMessage = request.error;
+          showError = true;
+          showResponse = true;
+          setTimeout(() => {
+            showError = false;
+            errorMessage = "";
+          }, 5000);
+        } else if (request.content) {
+          summarizePage(request.content);
+        }
         sendResponse({ success: true });
       }
       return true;
@@ -862,6 +1085,7 @@
     return () => {
       document.removeEventListener("keydown", down);
       window.removeEventListener("open-webui-toggle-search", handleToggleEvent);
+      window.removeEventListener("open-webui-summarize-page", handleSummarizeEvent as EventListener);
       delete (window as any).openWebUIToggleSearch;
     };
   });
@@ -1139,7 +1363,11 @@
      ======================================================================== -->
 <!-- Response Popup -->
 {#if showResponse}
+  <!-- svelte-ignore a11y-click-events-have-key-events -->
+  <!-- svelte-ignore a11y-no-static-element-interactions -->
   <div
+    role="dialog"
+    aria-modal="true"
     class="tlwd-fixed tlwd-top-0 tlwd-right-0 tlwd-left-0 tlwd-bottom-0 tlwd-w-full tlwd-min-h-screen tlwd-h-screen tlwd-flex tlwd-justify-center tlwd-z-[9999999999] tlwd-overflow-hidden tlwd-overscroll-contain"
             on:mousedown={() => {
               showResponse = false;
@@ -1151,7 +1379,11 @@
             }}
   >
     <div class="tlwd-m-auto tlwd-max-w-3xl tlwd-w-full tlwd-pb-32 tlwd-px-4">
+      <!-- svelte-ignore a11y-click-events-have-key-events -->
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
       <div
+        role="dialog"
+        aria-modal="true"
         class="tlwd-w-full tlwd-flex tlwd-flex-col tlwd-justify-between tlwd-py-4 tlwd-px-5 tlwd-rounded-2xl tlwd-outline tlwd-outline-1 tlwd-outline-gray-850 tlwd-backdrop-blur-3xl tlwd-bg-gray-850/70 shadow-4xl modal-animation tlwd-max-h-[80vh] tlwd-overflow-hidden tlwd-flex tlwd-flex-col"
         on:mousedown={(e) => {
           e.stopPropagation();

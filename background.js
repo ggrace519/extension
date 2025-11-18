@@ -173,7 +173,7 @@ function isValidUrl(urlString) {
 // content scripts or malicious code injection.
 // ============================================================================
 // Security: Validate message actions
-const ALLOWED_ACTIONS = ['getSelection', 'writeText', 'fetchModels', 'toggleSearch', 'encryptApiKey', 'decryptApiKey', 'createChat'];
+const ALLOWED_ACTIONS = ['getSelection', 'writeText', 'fetchModels', 'toggleSearch', 'encryptApiKey', 'decryptApiKey', 'createChat', 'extractPageContent', 'summarizePage'];
 
 // ============================================================================
 // ENHANCEMENT: Rate Limiting
@@ -243,6 +243,129 @@ function validateCSPHeaders(response) {
     console.log("Extension: CSP header detected:", cspHeader);
   }
   return true; // Don't block based on CSP headers, just validate
+}
+
+// ============================================================================
+// ENHANCEMENT: Page Content Extraction
+// ============================================================================
+// Extracts main article content from web pages, filtering out navigation,
+// ads, footers, and other non-content elements. Uses multiple strategies
+// to find the main content.
+// ============================================================================
+// Function to extract page content (executed in page context)
+function extractPageContentScript() {
+  // Helper function to check if element is visible
+  function isVisible(element) {
+    if (!element) return false;
+    const style = window.getComputedStyle(element);
+    return style.display !== 'none' && 
+           style.visibility !== 'hidden' && 
+           style.opacity !== '0' &&
+           element.offsetWidth > 0 && 
+           element.offsetHeight > 0;
+  }
+
+  // Helper function to check if element should be excluded
+  function shouldExclude(element) {
+    if (!element) return true;
+    
+    const tagName = element.tagName.toLowerCase();
+    const id = (element.id || '').toLowerCase();
+    const className = (element.className || '').toLowerCase();
+    
+    // Exclude navigation, headers, footers, ads
+    if (tagName === 'nav' || tagName === 'header' || tagName === 'footer' || 
+        tagName === 'aside' || tagName === 'script' || tagName === 'style' ||
+        tagName === 'noscript' || tagName === 'iframe') {
+      return true;
+    }
+    
+    // Exclude common ad containers
+    if (id.includes('ad') || className.includes('ad') || 
+        className.includes('advertisement') || className.includes('sidebar') ||
+        className.includes('cookie') || className.includes('popup') ||
+        className.includes('modal') || className.includes('overlay')) {
+      return true;
+    }
+    
+    // Exclude elements with role="navigation" or role="banner"
+    const role = element.getAttribute('role');
+    if (role === 'navigation' || role === 'banner' || role === 'complementary') {
+      return true;
+    }
+    
+    return false;
+  }
+
+  // Strategy 1: Look for semantic HTML5 elements
+  let mainContent = document.querySelector('main, article, [role="main"]');
+  if (mainContent && isVisible(mainContent)) {
+    // Filter out excluded elements within main content
+    const excluded = mainContent.querySelectorAll('nav, header, footer, aside, .ad, .advertisement, [id*="ad"], [class*="ad"]');
+    excluded.forEach(el => el.remove());
+    const text = mainContent.innerText || mainContent.textContent || '';
+    if (text.trim().length > 100) {
+      return text.trim();
+    }
+  }
+
+  // Strategy 2: Look for common content class names
+  const contentSelectors = [
+    '.content', '.post', '.entry', '.article', '.article-content',
+    '.main-content', '.post-content', '.entry-content', '.article-body',
+    '#content', '#main', '#article', '#post'
+  ];
+  
+  for (const selector of contentSelectors) {
+    const element = document.querySelector(selector);
+    if (element && isVisible(element) && !shouldExclude(element)) {
+      // Clone to avoid modifying original
+      const clone = element.cloneNode(true);
+      const excluded = clone.querySelectorAll('nav, header, footer, aside, .ad, .advertisement, [id*="ad"], [class*="ad"]');
+      excluded.forEach(el => el.remove());
+      const text = (clone.innerText || clone.textContent || '').trim();
+      if (text.length > 100) {
+        return text;
+      }
+    }
+  }
+
+  // Strategy 3: Extract all visible text but filter out excluded elements
+  const body = document.body.cloneNode(true);
+  const excluded = body.querySelectorAll('nav, header, footer, aside, script, style, .ad, .advertisement, [id*="ad"], [class*="ad"], [role="navigation"], [role="banner"]');
+  excluded.forEach(el => el.remove());
+  
+  // Remove hidden elements
+  const allElements = body.querySelectorAll('*');
+  allElements.forEach(el => {
+    if (!isVisible(el)) {
+      el.remove();
+    }
+  });
+  
+  const text = (body.innerText || body.textContent || '').trim();
+  
+  // Clean up excessive whitespace
+  return text.replace(/\s+/g, ' ').substring(0, 50000); // Limit to 50k chars
+}
+
+// Message handler for extractPageContent
+async function handleExtractPageContent(tabId) {
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      func: extractPageContentScript
+    });
+    
+    if (results && results[0] && results[0].result) {
+      return { data: results[0].result };
+    } else {
+      return { error: "No content extracted" };
+    }
+  } catch (error) {
+    console.error("Extension: Error extracting page content:", error);
+    return { error: error.message || "Failed to extract content" };
+  }
 }
 
 // ============================================================================
@@ -487,6 +610,17 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
       }
     })();
     return true; // Keep channel open for async response
+  } else if (request.action == "extractPageContent") {
+    // Extract page content from the current tab
+    (async () => {
+      try {
+        const result = await handleExtractPageContent(id);
+        sendResponse(result);
+      } catch (error) {
+        sendResponse({ error: error.message });
+      }
+    })();
+    return true; // Keep channel open for async response
   } else if (request.action == "createChat") {
     // ========================================================================
     // ENHANCEMENT: Continue in OpenWebUI Feature
@@ -668,5 +802,139 @@ chrome.runtime.onConnect.addListener((port) => {
           });
       }
     });
+  }
+});
+
+// ============================================================================
+// ENHANCEMENT: Context Menu Registration
+// ============================================================================
+// Registers context menu items for the extension. Creates a parent menu
+// "OpenWebUI Extension" and a child menu "Summarize this Page".
+// ============================================================================
+// Register context menu on extension install/startup
+function registerContextMenus() {
+  // Remove existing menu items to avoid duplicates
+  chrome.contextMenus.removeAll(() => {
+    // Create parent menu
+    chrome.contextMenus.create({
+      id: 'openwebui-extension',
+      title: 'OpenWebUI Extension',
+      contexts: ['page', 'selection']
+    });
+    
+    // Create child menu for summarizing page
+    chrome.contextMenus.create({
+      id: 'summarize-page',
+      parentId: 'openwebui-extension',
+      title: 'Summarize this Page',
+      contexts: ['page']
+    });
+  });
+}
+
+// Register on install
+chrome.runtime.onInstalled.addListener(() => {
+  registerContextMenus();
+});
+
+// Also register on startup (in case menu was removed)
+registerContextMenus();
+
+// ============================================================================
+// ENHANCEMENT: Context Menu Click Handler
+// ============================================================================
+// Handles clicks on context menu items. When "Summarize this Page" is clicked,
+// extracts page content and sends it to the content script for summarization.
+// ============================================================================
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId === 'openwebui-extension') {
+    // Parent menu clicked - open the search interface
+    const url = tab.url || "";
+    if (url.startsWith("chrome://") || 
+        url.startsWith("chrome-extension://") || 
+        url.startsWith("chrome-search://") ||
+        url.startsWith("edge://") ||
+        url.startsWith("about:")) {
+      console.log("Extension cannot access this page:", url);
+      return;
+    }
+    
+    // Send toggle search message to content script
+    chrome.tabs.sendMessage(tab.id, { action: "toggleSearch" }).catch((error) => {
+      // If message fails, try script injection
+      chrome.scripting.executeScript({
+        target: { tabId: tab.id, allFrames: false },
+        func: () => {
+          window.dispatchEvent(new CustomEvent("open-webui-toggle-search", { bubbles: true }));
+          if (window.openWebUIToggleSearch && typeof window.openWebUIToggleSearch === 'function') {
+            try {
+              window.openWebUIToggleSearch();
+            } catch (e) {
+              console.error("Error calling toggle function:", e);
+            }
+          }
+        }
+      }).catch((err) => {
+        console.error("Extension: Error injecting script:", err);
+      });
+    });
+  } else if (info.menuItemId === 'summarize-page') {
+    // Check if page is accessible
+    const url = tab.url || "";
+    if (url.startsWith("chrome://") || 
+        url.startsWith("chrome-extension://") || 
+        url.startsWith("chrome-search://") ||
+        url.startsWith("edge://") ||
+        url.startsWith("about:")) {
+      console.log("Extension cannot access this page:", url);
+      return;
+    }
+    
+    try {
+      // Extract page content
+      const extractResult = await handleExtractPageContent(tab.id);
+      
+      if (extractResult.error) {
+        console.error("Extension: Failed to extract content:", extractResult.error);
+        // Send error message to content script
+        chrome.tabs.sendMessage(tab.id, {
+          action: "summarizePage",
+          error: extractResult.error
+        }).catch(() => {
+          // Content script might not be ready, try script injection
+          chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            func: () => {
+              console.error("Extension: Failed to extract page content");
+            }
+          });
+        });
+        return;
+      }
+      
+      // Send extracted content to content script
+      chrome.tabs.sendMessage(tab.id, {
+        action: "summarizePage",
+        content: extractResult.data
+      }).catch((error) => {
+        // If message fails, try script injection as fallback
+        console.log("Message failed, trying script injection:", error);
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (content) => {
+            // Dispatch custom event that content script can listen for
+            window.dispatchEvent(new CustomEvent("open-webui-summarize-page", {
+              bubbles: true,
+              detail: { content: content }
+            }));
+          },
+          args: [extractResult.data]
+        }).catch((err) => {
+          console.error("Extension: Error injecting summarize script:", err);
+        });
+      });
+    } catch (error) {
+      console.error("Extension: Error in context menu handler:", error);
+    }
   }
 });
