@@ -1,3 +1,16 @@
+// ============================================================================
+// ENHANCEMENT: API Key Encryption
+// ============================================================================
+// This fork adds AES-256-GCM encryption for API keys stored in chrome.storage.local.
+// Encryption uses the extension ID as part of the key derivation, making each
+// installation unique. This prevents API keys from being readable in plain text
+// if storage is accessed.
+//
+// Security Note: While the extension ID can be obtained, the encryption still
+// provides protection against casual inspection and requires knowledge of the
+// encryption scheme to decrypt. See SECURITY.md for details.
+// ============================================================================
+
 // API Key Encryption using Web Crypto API
 // Derive encryption key from extension ID for unique per-installation encryption
 async function getEncryptionKey() {
@@ -124,6 +137,13 @@ async function decryptApiKey(encryptedApiKey) {
   }
 }
 
+// ============================================================================
+// ENHANCEMENT: SSRF Protection - URL Validation
+// ============================================================================
+// Validates URLs to prevent Server-Side Request Forgery (SSRF) attacks.
+// Only allows http: and https: protocols, blocking javascript:, data:, and
+// other potentially dangerous schemes.
+// ============================================================================
 // Security: URL validation to prevent SSRF attacks
 function isValidUrl(urlString) {
   if (!urlString || typeof urlString !== 'string') {
@@ -146,9 +166,22 @@ function isValidUrl(urlString) {
   }
 }
 
+// ============================================================================
+// ENHANCEMENT: Message Action Validation
+// ============================================================================
+// Whitelist of allowed message actions to prevent unauthorized actions from
+// content scripts or malicious code injection.
+// ============================================================================
 // Security: Validate message actions
 const ALLOWED_ACTIONS = ['getSelection', 'writeText', 'fetchModels', 'toggleSearch', 'encryptApiKey', 'decryptApiKey', 'createChat'];
 
+// ============================================================================
+// ENHANCEMENT: Rate Limiting
+// ============================================================================
+// Implements sliding window rate limiting to prevent abuse and API quota exhaustion.
+// Limits are enforced per action type (chatCompletion, fetchModels, general).
+// Uses chrome.storage.local to persist request history across extension reloads.
+// ============================================================================
 // Rate Limiting Configuration
 const RATE_LIMITS = {
   chatCompletion: { max: 10, window: 60000 }, // 10 requests per minute
@@ -196,6 +229,12 @@ async function checkRateLimit(actionType) {
   }
 }
 
+// ============================================================================
+// ENHANCEMENT: Content Security Policy (CSP) Validation
+// ============================================================================
+// Logs CSP headers from API responses for security monitoring. This helps
+// identify potential security issues with API responses.
+// ============================================================================
 // CSP Validation: Check if response headers comply with CSP
 function validateCSPHeaders(response) {
   const cspHeader = response.headers.get('content-security-policy');
@@ -206,6 +245,13 @@ function validateCSPHeaders(response) {
   return true; // Don't block based on CSP headers, just validate
 }
 
+// ============================================================================
+// ENHANCEMENT: Keyboard Shortcut Handling via Commands API
+// ============================================================================
+// Uses Chrome's Commands API instead of direct keydown listeners to avoid
+// conflicts with browser shortcuts and ensure reliable global shortcut handling.
+// Includes fallback mechanisms for restricted pages (chrome://, etc.).
+// ============================================================================
 // Handle keyboard shortcut command
 chrome.commands.onCommand.addListener(function (command) {
   console.log("Command received:", command);
@@ -442,6 +488,13 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     })();
     return true; // Keep channel open for async response
   } else if (request.action == "createChat") {
+    // ========================================================================
+    // ENHANCEMENT: Continue in OpenWebUI Feature
+    // ========================================================================
+    // Allows users to transfer their conversation from the extension to the
+    // full OpenWebUI interface. Creates a new chat via API and opens it in a new tab.
+    // Includes URL validation, API key decryption, and CSP header validation.
+    // ========================================================================
     // Create a chat conversation in OpenWebUI via API
     (async () => {
       // Security: Validate URL to prevent SSRF
@@ -506,6 +559,14 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
   return true;
 });
 
+// ============================================================================
+// ENHANCEMENT: Streaming Chat Completions via Ports
+// ============================================================================
+// Uses Chrome's port-based messaging for streaming AI responses. This allows
+// real-time streaming of responses from the background script to content scripts
+// without blocking the message channel. Includes rate limiting and security
+// validation for all requests.
+// ============================================================================
 // Handle streaming chat completions via ports
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === "chat-stream") {

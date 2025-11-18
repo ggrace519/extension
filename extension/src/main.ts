@@ -1,3 +1,11 @@
+// ============================================================================
+// ENHANCEMENT: DOM Element Wait Before Mounting
+// ============================================================================
+// Waits for the extension-app element to exist before mounting the Svelte app.
+// This prevents "Cannot read properties of undefined" errors when the content
+// script runs before the DOM is fully ready. Includes retry logic.
+// ============================================================================
+
 import "./app.css";
 import App from "./App.svelte";
 

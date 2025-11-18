@@ -3,16 +3,24 @@
   import { generateOpenAIChatCompletion, getModels } from "../apis";
   import { splitStream } from "../utils";
 
+  // ========================================================================
+  // ENHANCEMENT: Response Popup and Conversation Management
+  // ========================================================================
+  // Added variables for displaying AI responses in a dedicated popup modal,
+  // managing conversation history, and handling follow-up questions.
+  // This allows users to have multi-turn conversations without leaving
+  // the current webpage.
+  // ========================================================================
   let show = false;
   let showConfig = true;
-  let showResponse = false;
-  let responseText = "";
-  let responseQuery = "";
-  let followUpInput = "";
-  let conversationHistory: Array<{role: string, content: string}> = [];
-  let isStreaming = false;
-  let errorMessage = "";
-  let showError = false;
+  let showResponse = false; // ENHANCEMENT: Controls response popup visibility
+  let responseText = ""; // ENHANCEMENT: Current streaming response text
+  let responseQuery = ""; // ENHANCEMENT: Original query that triggered response
+  let followUpInput = ""; // ENHANCEMENT: Input field for follow-up questions
+  let conversationHistory: Array<{role: string, content: string}> = []; // ENHANCEMENT: Multi-turn conversation history
+  let isStreaming = false; // ENHANCEMENT: Tracks if response is currently streaming
+  let errorMessage = ""; // ENHANCEMENT: Error message for rate limits, etc.
+  let showError = false; // ENHANCEMENT: Controls error message visibility
 
   let url = "";
   let key = "";
@@ -71,6 +79,12 @@
   const initHandler = async (e) => {
     e.preventDefault();
 
+    // ========================================================================
+    // ENHANCEMENT: API Key Encryption on Save
+    // ========================================================================
+    // Encrypts API key before storing in chrome.storage.local. This prevents
+    // API keys from being stored in plain text. Includes URL and input validation.
+    // ========================================================================
     // Security: Validate URL format before saving
     try {
       const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
@@ -155,6 +169,13 @@
     }, 0);
   };
 
+  // ========================================================================
+  // ENHANCEMENT: Continue in OpenWebUI Feature
+  // ========================================================================
+  // Transfers the current conversation from the extension to the full OpenWebUI
+  // interface. Creates a new chat via API and opens it in a new tab. Includes
+  // fallback logic if API call fails.
+  // ========================================================================
   // Function to continue conversation in OpenWebUI
   const continueInOpenWebUI = async () => {
     if (!url || conversationHistory.length === 0) {
@@ -245,6 +266,13 @@
     }
   };
 
+  // ========================================================================
+  // ENHANCEMENT: Follow-up Questions Feature
+  // ========================================================================
+  // Allows users to ask follow-up questions in the response popup, maintaining
+  // conversation context. Updates conversation history and streams new responses.
+  // Includes client-side rate limiting checks and proper Svelte reactivity handling.
+  // ========================================================================
   // Function to send follow-up question
   const sendFollowUp = async () => {
     // Client-side check to prevent UI spam (rate limiting is also handled by background script)
@@ -489,6 +517,14 @@
         }
       }
 
+      // ====================================================================
+      // ENHANCEMENT: Direct AI Response via Keyboard Shortcut
+      // ====================================================================
+      // Ctrl+Shift+Enter (or Cmd+Shift+Enter) with selected text triggers
+      // an AI response popup instead of navigating to OpenWebUI. Includes
+      // API key decryption, conversation history management, and streaming
+      // response display. Always fetches fresh config from storage.
+      // ====================================================================
       // Handle Ctrl+Shift+Enter (or Cmd+Shift+Enter) - get AI response directly
       if (
         e.key === "Enter" &&
@@ -785,6 +821,14 @@
         key = "";
       }
       
+      // ====================================================================
+      // ENHANCEMENT: Improved Configuration Loading
+      // ====================================================================
+      // Config screen is hidden if all required values exist, even if models
+      // API fails (e.g., due to CORS on other sites). This allows the extension
+      // to work on any website, not just the OpenWebUI instance. Models are
+      // loaded in the background as a non-blocking operation.
+      // ====================================================================
       // If we have all required config, hide config screen
       // (even if models API fails, we can still use the extension)
       if (_storageCache.url && key && _storageCache.model) {
@@ -1082,6 +1126,17 @@
   </div>
 {/if}
 
+<!-- ========================================================================
+     ENHANCEMENT: Response Popup Modal
+     ========================================================================
+     Displays AI responses in a dedicated modal popup with:
+     - Streaming response display with auto-scroll
+     - Conversation history (user and assistant messages)
+     - Follow-up question input
+     - Copy conversation button
+     - Continue in OpenWebUI button
+     - Error message display for rate limits
+     ======================================================================== -->
 <!-- Response Popup -->
 {#if showResponse}
   <div

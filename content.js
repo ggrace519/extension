@@ -1,3 +1,11 @@
+// ============================================================================
+// ENHANCEMENT: DOM Ready Initialization
+// ============================================================================
+// Waits for document.body to exist before initializing the extension to prevent
+// "Cannot read properties of null" errors. Includes retry logic and safety
+// timeouts. Prevents duplicate initializations.
+// ============================================================================
+
 // Prevent multiple initializations
 let initialized = false;
 let checkBodyInterval = null;
