@@ -815,30 +815,53 @@ chrome.runtime.onConnect.addListener((port) => {
 function registerContextMenus() {
   // Remove existing menu items to avoid duplicates
   chrome.contextMenus.removeAll(() => {
-    // Create parent menu
+    // Check for errors
+    if (chrome.runtime.lastError) {
+      console.error("Extension: Error removing context menus:", chrome.runtime.lastError);
+    }
+    
+    // Create parent menu (top-level menu item)
     chrome.contextMenus.create({
       id: 'openwebui-extension',
       title: 'OpenWebUI Extension',
       contexts: ['page', 'selection']
-    });
-    
-    // Create child menu for summarizing page
-    chrome.contextMenus.create({
-      id: 'summarize-page',
-      parentId: 'openwebui-extension',
-      title: 'Summarize this Page',
-      contexts: ['page']
+    }, () => {
+      if (chrome.runtime.lastError) {
+        console.error("Extension: Error creating parent context menu:", chrome.runtime.lastError);
+      } else {
+        console.log("Extension: Parent context menu created successfully");
+      }
+      
+      // Create child menu for summarizing page (only after parent is created)
+      chrome.contextMenus.create({
+        id: 'summarize-page',
+        parentId: 'openwebui-extension',
+        title: 'Summarize this Page',
+        contexts: ['page']
+      }, () => {
+        if (chrome.runtime.lastError) {
+          console.error("Extension: Error creating summarize context menu:", chrome.runtime.lastError);
+        } else {
+          console.log("Extension: Summarize context menu created successfully");
+        }
+      });
     });
   });
 }
 
 // Register on install
-chrome.runtime.onInstalled.addListener(() => {
-  registerContextMenus();
+chrome.runtime.onInstalled.addListener((details) => {
+  console.log("Extension: onInstalled event:", details.reason);
+  if (details.reason === 'install' || details.reason === 'update') {
+    registerContextMenus();
+  }
 });
 
 // Also register on startup (in case menu was removed)
-registerContextMenus();
+// Use a small delay to ensure service worker is ready
+setTimeout(() => {
+  registerContextMenus();
+}, 100);
 
 // ============================================================================
 // ENHANCEMENT: Context Menu Click Handler
