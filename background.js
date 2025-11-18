@@ -818,19 +818,20 @@ function registerContextMenus() {
     // Check for errors
     if (chrome.runtime.lastError) {
       console.error("Extension: Error removing context menus:", chrome.runtime.lastError);
+      return;
     }
     
-    // Create parent menu (top-level menu item)
+    // Create parent menu (top-level menu item that opens search)
     chrome.contextMenus.create({
       id: 'openwebui-extension',
       title: 'OpenWebUI Extension',
       contexts: ['page', 'selection']
-    }, () => {
+    }, (parentId) => {
       if (chrome.runtime.lastError) {
         console.error("Extension: Error creating parent context menu:", chrome.runtime.lastError);
-      } else {
-        console.log("Extension: Parent context menu created successfully");
+        return;
       }
+      console.log("Extension: Parent context menu created successfully");
       
       // Create child menu for summarizing page (only after parent is created)
       chrome.contextMenus.create({
@@ -838,7 +839,7 @@ function registerContextMenus() {
         parentId: 'openwebui-extension',
         title: 'Summarize this Page',
         contexts: ['page']
-      }, () => {
+      }, (childId) => {
         if (chrome.runtime.lastError) {
           console.error("Extension: Error creating summarize context menu:", chrome.runtime.lastError);
         } else {
