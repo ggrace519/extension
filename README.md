@@ -11,7 +11,8 @@ A Chrome extension that provides quick access to Open WebUI with a spotlight-sty
 This extension is built on top of the excellent work by the [Open WebUI](https://github.com/open-webui/open-webui) project. Open WebUI is an extensible, feature-rich, and user-friendly self-hosted WebUI designed to operate entirely offline. It supports various LLM runners, including Ollama, OpenAI, and more.
 
 **Original Project**: [open-webui/extension](https://github.com/open-webui/extension)  
-**Open WebUI**: [open-webui/open-webui](https://github.com/open-webui/open-webui)
+**Open WebUI**: [open-webui/open-webui](https://github.com/open-webui/open-webui)  
+**Main Developer**: [Tim J. Baek](https://github.com/timjbaek) - Original extension developer
 
 ## ✨ Enhancements in This Fork
 
