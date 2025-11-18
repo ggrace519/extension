@@ -821,31 +821,30 @@ function registerContextMenus() {
       return;
     }
     
-    // Create parent menu (top-level menu item that opens search)
+    // Create "OpenWebUI Extension" menu item (opens search interface)
     chrome.contextMenus.create({
       id: 'openwebui-extension',
       title: 'OpenWebUI Extension',
       contexts: ['page', 'selection']
-    }, (parentId) => {
+    }, () => {
       if (chrome.runtime.lastError) {
-        console.error("Extension: Error creating parent context menu:", chrome.runtime.lastError);
-        return;
+        console.error("Extension: Error creating OpenWebUI Extension context menu:", chrome.runtime.lastError);
+      } else {
+        console.log("Extension: OpenWebUI Extension context menu created successfully");
       }
-      console.log("Extension: Parent context menu created successfully");
-      
-      // Create child menu for summarizing page (only after parent is created)
-      chrome.contextMenus.create({
-        id: 'summarize-page',
-        parentId: 'openwebui-extension',
-        title: 'Summarize this Page',
-        contexts: ['page']
-      }, (childId) => {
-        if (chrome.runtime.lastError) {
-          console.error("Extension: Error creating summarize context menu:", chrome.runtime.lastError);
-        } else {
-          console.log("Extension: Summarize context menu created successfully");
-        }
-      });
+    });
+    
+    // Create "Summarize this Page" menu item as separate top-level item
+    chrome.contextMenus.create({
+      id: 'summarize-page',
+      title: 'Summarize this Page',
+      contexts: ['page']
+    }, () => {
+      if (chrome.runtime.lastError) {
+        console.error("Extension: Error creating summarize context menu:", chrome.runtime.lastError);
+      } else {
+        console.log("Extension: Summarize context menu created successfully");
+      }
     });
   });
 }
