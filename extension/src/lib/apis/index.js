@@ -1,50 +1,46 @@
 export const getModels = async (key, url) => {
-  let error = null;
+  // Proxy through background script to avoid CORS
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(
+      {
+        action: "fetchModels",
+        url: url,
+        key: key,
+      },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        if (response.error) {
+          reject(response.error);
+          return;
+        }
+        
+        let models = response.data?.data ?? [];
+        models = models
+          .filter((models) => models)
+          .sort((a, b) => {
+            // Compare case-insensitively
+            const lowerA = a.name.toLowerCase();
+            const lowerB = b.name.toLowerCase();
 
-  const res = await fetch(`${url}/api/models`, {
-    method: "GET",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      ...(key && { authorization: `Bearer ${key}` }),
-    },
-  })
-    .then(async (res) => {
-      if (!res.ok) throw await res.json();
-      return res.json();
-    })
-    .catch((err) => {
-      console.log(err);
-      error = err;
-      return null;
-    });
+            if (lowerA < lowerB) return -1;
+            if (lowerA > lowerB) return 1;
 
-  if (error) {
-    throw error;
-  }
+            // If same case-insensitively, sort by original strings,
+            // lowercase will come before uppercase due to ASCII values
+            if (a < b) return -1;
+            if (a > b) return 1;
 
-  let models = res?.data ?? [];
+            return 0; // They are equal
+          });
 
-  models = models
-    .filter((models) => models)
-    .sort((a, b) => {
-      // Compare case-insensitively
-      const lowerA = a.name.toLowerCase();
-      const lowerB = b.name.toLowerCase();
-
-      if (lowerA < lowerB) return -1;
-      if (lowerA > lowerB) return 1;
-
-      // If same case-insensitively, sort by original strings,
-      // lowercase will come before uppercase due to ASCII values
-      if (a < b) return -1;
-      if (a > b) return 1;
-
-      return 0; // They are equal
-    });
-
-  console.log(models);
-  return models;
+        console.log(models);
+        resolve(models);
+      }
+    );
+  });
 };
 
 export const generateOpenAIChatCompletion = async (
@@ -52,26 +48,65 @@ export const generateOpenAIChatCompletion = async (
   body = {},
   url = "http://localhost:8080"
 ) => {
-  const controller = new AbortController();
-  let error = null;
-
-  const res = await fetch(`${url}/chat/completions`, {
-    signal: controller.signal,
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${api_key}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  }).catch((err) => {
-    console.log(err);
-    error = err;
-    return null;
+  // Create a port for streaming data from background script
+  return new Promise((resolve, reject) => {
+    const port = chrome.runtime.connect({ name: "chat-stream" });
+    let controller = null;
+    let streamEnded = false;
+    
+    // Create a ReadableStream that reads from the port
+    const stream = new ReadableStream({
+      start(ctrl) {
+        controller = ctrl;
+      }
+    });
+    
+    port.onMessage.addListener((msg) => {
+      if (msg.error) {
+        if (controller) {
+          controller.error(new Error(msg.error));
+        }
+        port.disconnect();
+        reject(new Error(msg.error));
+        return;
+      }
+      
+      if (msg.done) {
+        streamEnded = true;
+        if (controller) {
+          controller.close();
+        }
+        port.disconnect();
+        return;
+      }
+      
+      if (msg.chunk && controller) {
+        controller.enqueue(new TextEncoder().encode(msg.chunk));
+      }
+    });
+    
+    port.onDisconnect.addListener(() => {
+      if (!streamEnded && controller) {
+        controller.error(new Error("Stream disconnected unexpectedly"));
+      }
+    });
+    
+    // Create Response-like object immediately
+    const response = {
+      ok: true,
+      status: 200,
+      body: stream,
+    };
+    
+    // Send the fetch request
+    port.postMessage({
+      action: "fetchChatCompletion",
+      url: url,
+      api_key: api_key,
+      body: body,
+    });
+    
+    // Resolve immediately with the stream
+    resolve([response, { abort: () => { port.disconnect(); } }]);
   });
-
-  if (error) {
-    throw error;
-  }
-
-  return [res, controller];
 };

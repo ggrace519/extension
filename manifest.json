@@ -3,6 +3,9 @@
   "name": "Open WebUI Extension",
   "description": "Open WebUI",
   "version": "1.0",
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self';"
+  },
   "icons": {
     "16": "images/icon-16.png",
     "32": "images/icon-32.png",
@@ -20,9 +23,20 @@
       "js": [
         "content.js",
         "extension/dist/main.js"
-      ]
+      ],
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
+  "commands": {
+    "open-search": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Space",
+        "mac": "Command+Shift+Space"
+      },
+      "description": "Open Open WebUI search"
+    }
+  },
   "host_permissions": [
     "<all_urls>"
   ],

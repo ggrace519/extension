@@ -5,6 +5,14 @@
 
   let show = false;
   let showConfig = true;
+  let showResponse = false;
+  let responseText = "";
+  let responseQuery = "";
+  let followUpInput = "";
+  let conversationHistory: Array<{role: string, content: string}> = [];
+  let isStreaming = false;
+  let errorMessage = "";
+  let showError = false;
 
   let url = "";
   let key = "";
@@ -12,6 +20,7 @@
 
   let searchValue = "";
   let models = [];
+  let responseContainer: HTMLElement | null = null;
 
   const resetConfig = () => {
     console.log("resetConfig");
@@ -22,10 +31,7 @@
       });
     } catch (error) {
       console.log(error);
-
-      localStorage.setItem("url", "");
-      localStorage.setItem("key", "");
-      localStorage.setItem("model", "");
+      // Security: Removed localStorage fallback - chrome.storage.local is more secure
     }
 
     url = "";
@@ -38,36 +44,621 @@
   const submitHandler = (e) => {
     e.preventDefault();
 
-    window.open(
-      `${url}/?q=${encodeURIComponent(searchValue)}&models=${model}`,
-      "_blank"
-    );
+    // Security: Validate URL and sanitize search value
+    try {
+      const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
+      if (!['http:', 'https:'].includes(urlObj.protocol)) {
+        console.error("Extension: Invalid URL protocol");
+        return;
+      }
+      
+      // Security: Sanitize search value (encodeURIComponent already handles this)
+      const sanitizedQuery = encodeURIComponent(searchValue);
+      const sanitizedModel = encodeURIComponent(model);
+      
+      window.open(
+        `${url}/?q=${sanitizedQuery}&models=${sanitizedModel}`,
+        "_blank"
+      );
 
-    searchValue = "";
-    show = false;
+      searchValue = "";
+      show = false;
+    } catch (error) {
+      console.error("Extension: Invalid URL format");
+    }
   };
 
-  const initHandler = (e) => {
+  const initHandler = async (e) => {
     e.preventDefault();
 
+    // Security: Validate URL format before saving
     try {
-      chrome.storage.local
-        .set({ url: url, key: key, model: model })
-        .then(() => {
-          console.log("Value is set");
+      const urlObj = new URL(url.startsWith('http') ? url : `https://${url}`);
+      if (!['http:', 'https:'].includes(urlObj.protocol)) {
+        console.error("Extension: Invalid URL protocol");
+        return;
+      }
+    } catch (error) {
+      console.error("Extension: Invalid URL format");
+      return;
+    }
+    
+    // Security: Basic API key validation (non-empty string)
+    if (!key || typeof key !== 'string' || key.trim().length === 0) {
+      console.error("Extension: Invalid API key");
+      return;
+    }
+    
+    // Security: Basic model validation
+    if (!model || typeof model !== 'string' || model.trim().length === 0) {
+      console.error("Extension: Invalid model");
+      return;
+    }
+
+    try {
+      // Encrypt API key before storing
+      const encryptionResponse = await chrome.runtime.sendMessage({
+        action: "encryptApiKey",
+        apiKey: key.trim()
+      });
+      
+      if (encryptionResponse.error) {
+        console.error("Extension: Failed to encrypt API key:", encryptionResponse.error);
+        // Fallback: store unencrypted (shouldn't happen, but for safety)
+        chrome.storage.local.set({ 
+          url: url.trim(), 
+          key: key.trim(), 
+          model: model.trim() 
         });
+      } else {
+        // Store encrypted API key
+        chrome.storage.local.set({ 
+          url: url.trim(), 
+          key: encryptionResponse.encrypted, 
+          model: model.trim() 
+        }).then(() => {
+          console.log("Value is set (API key encrypted)");
+        });
+      }
     } catch (error) {
       console.log(error);
-
-      localStorage.setItem("url", url);
-      localStorage.setItem("key", key);
-      localStorage.setItem("model", model);
+      // Security: Removed localStorage fallback - chrome.storage.local is more secure
     }
 
     showConfig = false;
   };
 
+  // Function to toggle search interface
+  const toggleSearch = async () => {
+    try {
+      const response = await chrome.runtime.sendMessage({
+        action: "getSelection",
+      });
+
+      if (response?.data ?? false) {
+        searchValue = response.data;
+      }
+    } catch (error) {
+      console.log("catch", error);
+    }
+
+    show = !show;
+
+    setTimeout(() => {
+      const inputElement = document.getElementById(
+        "open-webui-search-input"
+      );
+
+      if (inputElement) {
+        inputElement.focus();
+      }
+    }, 0);
+  };
+
+  // Function to send follow-up question
+  const sendFollowUp = async () => {
+    // Client-side check to prevent UI spam (rate limiting is also handled by background script)
+    if (!followUpInput.trim() || isStreaming) return;
+
+    const question = followUpInput.trim();
+    followUpInput = "";
+
+    // Make sure previous assistant response is in history before adding new question
+    if (responseText) {
+      const alreadyInHistory = conversationHistory.some(
+        m => m.role === "assistant" && m.content === responseText
+      );
+      
+      if (!alreadyInHistory) {
+        conversationHistory = [...conversationHistory, {
+          role: "assistant",
+          content: responseText,
+        }];
+      }
+    }
+
+    // Add user question to conversation history (reassign for reactivity)
+    conversationHistory = [...conversationHistory, {
+      role: "user",
+      content: question,
+    }];
+
+    // Clear current streaming response and start new one
+    responseText = "";
+    isStreaming = true;
+    
+    // Focus the input after a short delay
+    setTimeout(() => {
+      const inputElement = document.getElementById("open-webui-followup-input");
+      if (inputElement) {
+        inputElement.focus();
+      }
+    }, 100);
+
+    // Get current config
+    let currentUrl = url;
+    let currentKey = key;
+    let currentModel = model;
+
+        try {
+          const storedConfig = await chrome.storage.local.get(["url", "key", "model"]);
+          if (storedConfig.url) currentUrl = storedConfig.url;
+          if (storedConfig.model) currentModel = storedConfig.model;
+          
+          // Decrypt API key if it exists
+          if (storedConfig.key) {
+            try {
+              const decryptionResponse = await chrome.runtime.sendMessage({
+                action: "decryptApiKey",
+                encryptedApiKey: storedConfig.key
+              });
+              
+              if (decryptionResponse.error) {
+                console.error("Extension: Failed to decrypt API key:", decryptionResponse.error);
+                currentKey = storedConfig.key; // Use as-is (backward compatibility)
+              } else {
+                currentKey = decryptionResponse.decrypted;
+              }
+            } catch (error) {
+              console.error("Extension: Error decrypting API key:", error);
+              currentKey = storedConfig.key; // Use as-is (backward compatibility)
+            }
+          }
+        } catch (error) {
+          // Extension context might be invalidated - use existing values
+          if (error.message && error.message.includes("Extension context invalidated")) {
+            // Silently use existing config values
+          } else {
+            console.log("Failed to get stored config:", error);
+          }
+        }
+
+    // Determine endpoint
+    const isOpenAI = models.length > 0 
+      ? models.find((m) => m.id === currentModel)?.owned_by === "openai" ?? false
+      : false;
+    
+    const endpoint = isOpenAI ? `${currentUrl}/openai` : `${currentUrl}/ollama/v1`;
+
+    try {
+      const [res, controller] = await generateOpenAIChatCompletion(
+        currentKey,
+        {
+          model: currentModel,
+          messages: conversationHistory,
+          stream: true,
+        },
+        endpoint
+      );
+
+      if (res && res.ok) {
+        const reader = res.body
+          .pipeThrough(new TextDecoderStream())
+          .pipeThrough(splitStream("\n"))
+          .getReader();
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) {
+            break;
+          }
+
+          try {
+            let lines = value.split("\n");
+            for (const line of lines) {
+              if (line !== "") {
+                if (line === "data: [DONE]") {
+                  // Will handle after loop
+                } else {
+                  let data = JSON.parse(line.replace(/^data: /, ""));
+                  if (!("request_id" in data)) {
+                    const content = data.choices[0].delta.content ?? "";
+                    responseText += content;
+                    
+                    if (responseContainer) {
+                      setTimeout(() => {
+                        responseContainer.scrollTop = responseContainer.scrollHeight;
+                      }, 0);
+                    }
+                  }
+                }
+              }
+            }
+          } catch (error) {
+            console.log(error);
+          }
+        }
+        
+        // Add assistant response to conversation history after streaming completes
+        try {
+          if (responseText) {
+            // Check if this response is already in history (avoid duplicates)
+            const alreadyInHistory = conversationHistory.some(
+              m => m.role === "assistant" && m.content === responseText
+            );
+            
+            if (!alreadyInHistory) {
+              // Reassign to trigger Svelte reactivity
+              conversationHistory = [...conversationHistory, {
+                role: "assistant",
+                content: responseText,
+              }];
+            }
+          }
+          isStreaming = false;
+          // Clear responseText after adding to history so it doesn't interfere with display
+          responseText = "";
+          
+          // Focus the follow-up input after response completes
+          setTimeout(() => {
+            const inputElement = document.getElementById("open-webui-followup-input");
+            if (inputElement) {
+              inputElement.focus();
+            }
+          }, 100);
+        } catch (historyError) {
+          // Even if adding to history fails, we should still show the response
+          console.error("Extension: Error adding response to history:", historyError);
+          isStreaming = false;
+          // Don't clear responseText if we couldn't add it to history
+        }
+      } else {
+        console.error("Extension: API request failed:", res);
+        isStreaming = false;
+      }
+    } catch (error) {
+      console.error("Extension: Error sending follow-up:", error);
+      
+      // Check if it's a rate limit error
+      const errorMsg = error?.message || String(error);
+      if (errorMsg.includes("Rate limit exceeded")) {
+        errorMessage = errorMsg;
+        showError = true;
+        // Auto-hide error after 5 seconds
+        setTimeout(() => {
+          showError = false;
+          errorMessage = "";
+        }, 5000);
+      }
+      
+      // If we have a response but hit an error, try to save it anyway
+      if (responseText && isStreaming) {
+        try {
+          const alreadyInHistory = conversationHistory.some(
+            m => m.role === "assistant" && m.content === responseText
+          );
+          if (!alreadyInHistory) {
+            conversationHistory = [...conversationHistory, {
+              role: "assistant",
+              content: responseText,
+            }];
+          }
+        } catch (saveError) {
+          console.error("Extension: Could not save response:", saveError);
+        }
+      }
+      isStreaming = false;
+    }
+  };
+
   onMount(async () => {
+    // Store toggle function globally so injected scripts can call it
+    (window as any).openWebUIToggleSearch = toggleSearch;
+    
+    // Listen for custom event from background script (keyboard shortcut)
+    const handleToggleEvent = () => {
+      toggleSearch();
+    };
+    window.addEventListener("open-webui-toggle-search", handleToggleEvent);
+    
+    // Also listen for messages as fallback
+    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+      console.log("Content script received message:", request);
+      if (request.action === "toggleSearch") {
+        console.log("Toggling search interface");
+        toggleSearch();
+        sendResponse({ success: true });
+      }
+      return true;
+    });
+
+    const down = async (e) => {
+      // Reset the configuration when ⌘Shift+Escape is pressed
+      if (show && e.shiftKey && e.key === "Escape") {
+        resetConfig();
+      } else if (e.key === "Escape") {
+        if (showResponse) {
+          showResponse = false;
+          responseText = "";
+          responseQuery = "";
+          followUpInput = "";
+          conversationHistory = [];
+          isStreaming = false;
+        } else {
+          show = false;
+        }
+      }
+
+      // Handle Ctrl+Shift+Enter (or Cmd+Shift+Enter) - get AI response directly
+      if (
+        e.key === "Enter" &&
+        (e.metaKey || e.ctrlKey) &&
+        (e.shiftKey || e.altKey)
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+
+        // Always fetch fresh config from storage to ensure we have it
+        let currentUrl = url;
+        let currentKey = key;
+        let currentModel = model;
+
+        try {
+          const storedConfig = await chrome.storage.local.get(["url", "key", "model"]);
+          if (storedConfig.url) {
+            currentUrl = storedConfig.url;
+            url = storedConfig.url;
+          }
+          if (storedConfig.model) {
+            currentModel = storedConfig.model;
+            model = storedConfig.model;
+          }
+          
+          // Decrypt API key if it exists
+          if (storedConfig.key) {
+            try {
+              const decryptionResponse = await chrome.runtime.sendMessage({
+                action: "decryptApiKey",
+                encryptedApiKey: storedConfig.key
+              });
+              
+              if (decryptionResponse.error) {
+                console.error("Extension: Failed to decrypt API key:", decryptionResponse.error);
+                currentKey = storedConfig.key; // Use as-is (backward compatibility)
+                key = storedConfig.key;
+              } else {
+                currentKey = decryptionResponse.decrypted;
+                key = decryptionResponse.decrypted;
+              }
+            } catch (error) {
+              console.error("Extension: Error decrypting API key:", error);
+              currentKey = storedConfig.key; // Use as-is (backward compatibility)
+              key = storedConfig.key;
+            }
+          }
+        } catch (error) {
+          // Extension context might be invalidated - use existing values
+          if (error.message && error.message.includes("Extension context invalidated")) {
+            // Silently use existing config values
+          } else {
+            console.log("Failed to get stored config:", error);
+          }
+        }
+
+        // Check if we have valid config
+        if (!currentUrl || !currentKey || !currentModel) {
+          console.warn("Extension: Missing configuration. Please configure the extension first.");
+          return;
+        }
+
+        try {
+          const response = await chrome.runtime.sendMessage({
+            action: "getSelection",
+          });
+
+          if (response?.data ?? false) {
+            // Initialize conversation
+            responseQuery = response.data;
+            responseText = "";
+            // Reassign to ensure reactivity
+            conversationHistory = [
+              {
+                role: "system",
+                content: "You are a helpful assistant.",
+              },
+              {
+                role: "user",
+                content: response.data,
+              },
+            ];
+            showResponse = true;
+            isStreaming = true;
+
+            // Store the active element before making API call (optional - for writing to input)
+            const activeElement = document.activeElement;
+            let targetElement = null;
+            
+            if (activeElement && 
+                (activeElement.tagName === "INPUT" || activeElement.tagName === "TEXTAREA")) {
+              targetElement = activeElement;
+            }
+            
+            let targetId = null;
+            if (targetElement) {
+              targetId = targetElement.id || `open-webui-target-${Date.now()}`;
+              if (!targetElement.id) {
+                targetElement.id = targetId;
+              }
+            }
+
+            // Determine endpoint - check if model is OpenAI compatible
+            // If models array is empty (API failed), default to ollama endpoint
+            const isOpenAI = models.length > 0 
+              ? models.find((m) => m.id === currentModel)?.owned_by === "openai" ?? false
+              : false;
+            
+            const endpoint = isOpenAI ? `${currentUrl}/openai` : `${currentUrl}/ollama/v1`;
+
+            const [res, controller] = await generateOpenAIChatCompletion(
+              currentKey,
+              {
+                model: currentModel,
+                messages: conversationHistory,
+                stream: true,
+              },
+              endpoint
+            );
+
+            if (res && res.ok) {
+              const reader = res.body
+                .pipeThrough(new TextDecoderStream())
+                .pipeThrough(splitStream("\n"))
+                .getReader();
+
+              let responseComplete = false;
+              while (true) {
+                const { value, done } = await reader.read();
+                if (done) {
+                  break;
+                }
+
+                try {
+                  let lines = value.split("\n");
+                  for (const line of lines) {
+                    if (line !== "") {
+                      console.log(line);
+                      if (line === "data: [DONE]") {
+                        console.log("DONE");
+                        responseComplete = true;
+                      } else {
+                        let data = JSON.parse(line.replace(/^data: /, ""));
+                        console.log(data);
+
+                        if ("request_id" in data) {
+                          console.log(data.request_id);
+                        } else {
+                          const content = data.choices[0].delta.content ?? "";
+                          // Update popup display
+                          responseText += content;
+                          
+                          // Auto-scroll to bottom as content streams in
+                          if (responseContainer) {
+                            setTimeout(() => {
+                              responseContainer.scrollTop = responseContainer.scrollHeight;
+                            }, 0);
+                          }
+                          
+                          // Optionally also write to input field if one was focused
+                          if (targetId && content) {
+                            await chrome.runtime.sendMessage({
+                              action: "writeText",
+                              text: content,
+                              targetId: targetId,
+                            });
+                          }
+                        }
+                      }
+                    }
+                  }
+                } catch (error) {
+                  console.log(error);
+                }
+              }
+              
+              // Add assistant response to conversation history after streaming completes
+              try {
+                if (responseText) {
+                  // Check if this response is already in history (avoid duplicates)
+                  const alreadyInHistory = conversationHistory.some(
+                    m => m.role === "assistant" && m.content === responseText
+                  );
+                  
+                  if (!alreadyInHistory) {
+                    // Reassign to trigger Svelte reactivity
+                    conversationHistory = [...conversationHistory, {
+                      role: "assistant",
+                      content: responseText,
+                    }];
+                  }
+                }
+                isStreaming = false;
+                // Clear responseText after adding to history so it doesn't interfere with display
+                responseText = "";
+                
+                // Focus the follow-up input after response completes
+                setTimeout(() => {
+                  const inputElement = document.getElementById("open-webui-followup-input");
+                  if (inputElement) {
+                    inputElement.focus();
+                  }
+                }, 100);
+              } catch (historyError) {
+                // Even if adding to history fails, we should still show the response
+                console.error("Extension: Error adding response to history:", historyError);
+                isStreaming = false;
+                // Don't clear responseText if we couldn't add it to history
+                // This way it will still be displayed
+              }
+            } else {
+              console.error("Extension: API request failed:", res);
+              showResponse = false;
+              isStreaming = false;
+            }
+          } else {
+            // Silently ignore if no text is selected - user might have accidentally triggered the shortcut
+          }
+        } catch (error) {
+          console.error("Extension: Error getting AI response:", error);
+          
+          // Check if it's a rate limit error
+          const errorMsg = error?.message || String(error);
+          if (errorMsg.includes("Rate limit exceeded")) {
+            errorMessage = errorMsg;
+            showError = true;
+            showResponse = true; // Keep popup open to show error
+            // Auto-hide error after 5 seconds
+            setTimeout(() => {
+              showError = false;
+              errorMessage = "";
+            }, 5000);
+          }
+          
+          // If we have a response but hit an error, try to save it anyway
+          if (responseText && isStreaming) {
+            try {
+              const alreadyInHistory = conversationHistory.some(
+                m => m.role === "assistant" && m.content === responseText
+              );
+              if (!alreadyInHistory) {
+                conversationHistory = [...conversationHistory, {
+                  role: "assistant",
+                  content: responseText,
+                }];
+              }
+            } catch (saveError) {
+              console.error("Extension: Could not save response:", saveError);
+            }
+          }
+          isStreaming = false;
+        }
+      }
+    };
+
+    // Attach event listener immediately, before async operations
+    document.addEventListener("keydown", down, { capture: true, passive: false });
+    
+    // Now load configuration asynchronously
     let _storageCache = null;
 
     try {
@@ -78,154 +669,67 @@
 
     if (_storageCache) {
       url = _storageCache.url ?? "";
-      key = _storageCache.key ?? "";
       model = _storageCache.model ?? "";
-      if (_storageCache.url && _storageCache.key && _storageCache.model) {
-        models = await getModels(_storageCache.key, _storageCache.url).catch(
-          (error) => {
-            console.log(error);
-            resetConfig();
-          }
-        );
-
-        if (models) {
-          showConfig = false;
-        }
-      }
-    }
-
-    const down = async (e) => {
-      // Reset the configuration when ⌘Shift+Escape is pressed
-      if (show && e.shiftKey && e.key === "Escape") {
-        resetConfig();
-      } else if (e.key === "Escape") {
-        show = false;
-      }
-
-      if (
-        e.key === " " &&
-        (e.metaKey || e.ctrlKey) &&
-        (e.shiftKey || e.altKey)
-      ) {
-        e.preventDefault();
+      
+      // Decrypt API key if it exists
+      if (_storageCache.key) {
         try {
-          const response = await chrome.runtime.sendMessage({
-            action: "getSelection",
+          const decryptionResponse = await chrome.runtime.sendMessage({
+            action: "decryptApiKey",
+            encryptedApiKey: _storageCache.key
           });
-
-          if (response?.data ?? false) {
-            searchValue = response.data;
+          
+          if (decryptionResponse.error) {
+            console.error("Extension: Failed to decrypt API key:", decryptionResponse.error);
+            // Use as-is (might be unencrypted for backward compatibility)
+            key = _storageCache.key;
+          } else {
+            key = decryptionResponse.decrypted;
           }
         } catch (error) {
-          console.log("catch", error);
+          console.error("Extension: Error decrypting API key:", error);
+          // Use as-is (might be unencrypted for backward compatibility)
+          key = _storageCache.key;
         }
-
-        show = !show;
-
-        // console.log("toggle", show, searchValue);
-
-        setTimeout(() => {
-          const inputElement = document.getElementById(
-            "open-webui-search-input"
-          );
-
-          if (inputElement) {
-            inputElement.focus();
-          }
-        }, 0);
+      } else {
+        key = "";
       }
-
-      if (key !== "" && url !== "") {
-        if (
-          e.key === "Enter" &&
-          (e.metaKey || e.ctrlKey) &&
-          (e.shiftKey || e.altKey)
-        ) {
-          e.preventDefault();
-
-          try {
-            const response = await chrome.runtime.sendMessage({
-              action: "getSelection",
-            });
-
-            if (response?.data ?? false) {
-              await chrome.runtime.sendMessage({
-                action: "writeText",
-                text: "\n",
-              });
-
-              const [res, controller] = await generateOpenAIChatCompletion(
-                key,
-                {
-                  model: model,
-                  messages: [
-                    {
-                      role: "system",
-                      content: "You are a helpful assistant.",
-                    },
-                    {
-                      role: "user",
-                      content: response.data,
-                    },
-                  ],
-                  stream: true,
-                },
-
-                models.find((m) => m.id === model)?.owned_by === "openai" ??
-                  false
-                  ? `${url}/openai`
-                  : `${url}/ollama/v1`
-              );
-
-              if (res && res.ok) {
-                const reader = res.body
-                  .pipeThrough(new TextDecoderStream())
-                  .pipeThrough(splitStream("\n"))
-                  .getReader();
-
-                while (true) {
-                  const { value, done } = await reader.read();
-                  if (done) {
-                    break;
-                  }
-
-                  try {
-                    let lines = value.split("\n");
-                    for (const line of lines) {
-                      if (line !== "") {
-                        console.log(line);
-                        if (line === "data: [DONE]") {
-                          console.log("DONE");
-                        } else {
-                          let data = JSON.parse(line.replace(/^data: /, ""));
-                          console.log(data);
-
-                          if ("request_id" in data) {
-                            console.log(data.request_id);
-                          } else {
-                            await chrome.runtime.sendMessage({
-                              action: "writeText",
-                              text: data.choices[0].delta.content ?? "",
-                            });
-                          }
-                        }
-                      }
-                    }
-                  } catch (error) {
-                    console.log(error);
-                  }
-                }
-              }
-            }
-          } catch (error) {
-            console.log(error);
+      
+      // If we have all required config, hide config screen
+      // (even if models API fails, we can still use the extension)
+      if (_storageCache.url && key && _storageCache.model) {
+        showConfig = false;
+        
+        // Try to load models in the background (non-blocking)
+        try {
+          models = await getModels(key, _storageCache.url);
+          // Models loaded successfully, but config screen stays hidden
+        } catch (error) {
+          // CORS errors are expected when loading models from other sites - this is non-critical
+          // Rate limit errors are also non-critical for background loading
+          const errorMsg = error?.message || String(error);
+          if (!errorMsg.includes("CORS") && 
+              !errorMsg.includes("Failed to fetch") && 
+              !errorMsg.includes("Rate limit exceeded")) {
+            console.log("Failed to load models (non-critical):", error);
           }
+          // Models failed to load, but we still have config - keep config screen hidden
+          // User can still use the extension with the stored model
         }
+      } else {
+        // Missing required config - show config screen
+        showConfig = true;
       }
+    } else {
+      // No config found - show config screen
+      showConfig = true;
+    }
+    
+    return () => {
+      document.removeEventListener("keydown", down);
+      window.removeEventListener("open-webui-toggle-search", handleToggleEvent);
+      delete (window as any).openWebUIToggleSearch;
     };
-
-    document.addEventListener("keydown", down, { capture: true });
-    return () => document.removeEventListener("keydown", down);
   });
 </script>
 
@@ -312,7 +816,24 @@
                     url = url.slice(0, -1);
                   }
 
-                  models = await getModels(key, url);
+                  try {
+                    models = await getModels(key, url);
+                    // Clear any previous errors
+                    showError = false;
+                    errorMessage = "";
+                  } catch (error) {
+                    const errorMsg = error?.message || String(error);
+                    if (errorMsg.includes("Rate limit exceeded")) {
+                      errorMessage = errorMsg;
+                      showError = true;
+                      setTimeout(() => {
+                        showError = false;
+                        errorMessage = "";
+                      }, 5000);
+                    } else {
+                      console.error("Extension: Error fetching models:", error);
+                    }
+                  }
                 }}
               >
                 <svg
@@ -468,5 +989,186 @@
         </div>
       </div>
     {/if}
+  </div>
+{/if}
+
+<!-- Response Popup -->
+{#if showResponse}
+  <div
+    class="tlwd-fixed tlwd-top-0 tlwd-right-0 tlwd-left-0 tlwd-bottom-0 tlwd-w-full tlwd-min-h-screen tlwd-h-screen tlwd-flex tlwd-justify-center tlwd-z-[9999999999] tlwd-overflow-hidden tlwd-overscroll-contain"
+            on:mousedown={() => {
+              showResponse = false;
+              responseText = "";
+              responseQuery = "";
+              followUpInput = "";
+              conversationHistory = [];
+              isStreaming = false;
+            }}
+  >
+    <div class="tlwd-m-auto tlwd-max-w-3xl tlwd-w-full tlwd-pb-32 tlwd-px-4">
+      <div
+        class="tlwd-w-full tlwd-flex tlwd-flex-col tlwd-justify-between tlwd-py-4 tlwd-px-5 tlwd-rounded-2xl tlwd-outline tlwd-outline-1 tlwd-outline-gray-850 tlwd-backdrop-blur-3xl tlwd-bg-gray-850/70 shadow-4xl modal-animation tlwd-max-h-[80vh] tlwd-overflow-hidden tlwd-flex tlwd-flex-col"
+        on:mousedown={(e) => {
+          e.stopPropagation();
+        }}
+      >
+        <!-- Header -->
+        <div class="tlwd-flex tlwd-items-center tlwd-justify-between tlwd-mb-4 tlwd-pb-3 tlwd-border-b tlwd-border-gray-700">
+          <div class="tlwd-flex tlwd-items-center tlwd-gap-2">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke-width={2.5}
+              stroke="currentColor"
+              class="tlwd-size-5 tlwd-text-neutral-300"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"
+              />
+            </svg>
+            <h3 class="tlwd-text-lg tlwd-font-semibold tlwd-text-neutral-100">AI Response</h3>
+          </div>
+          <button
+            class="tlwd-flex tlwd-items-center tlwd-bg-transparent tlwd-text-neutral-400 hover:tlwd-text-neutral-100 tlwd-cursor-pointer tlwd-p-1 tlwd-outline-none tlwd-border-none tlwd-transition-colors"
+            on:click={() => {
+              showResponse = false;
+              responseText = "";
+              responseQuery = "";
+              followUpInput = "";
+              conversationHistory = [];
+              isStreaming = false;
+            }}
+            type="button"
+          >
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+              stroke-width={2.5}
+              stroke="currentColor"
+              class="tlwd-size-5"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </button>
+        </div>
+
+        <!-- Conversation History -->
+        <div 
+          class="tlwd-flex-1 tlwd-overflow-y-auto tlwd-pr-2 tlwd-mb-4"
+          bind:this={responseContainer}
+        >
+          {#each conversationHistory as message, index}
+            {#if message.role === "user"}
+              <div class="tlwd-mb-4">
+                <div class="tlwd-text-xs tlwd-text-neutral-400 tlwd-mb-1">You:</div>
+                <div class="tlwd-text-sm tlwd-text-neutral-200 tlwd-bg-gray-800/50 tlwd-rounded-lg tlwd-p-3">
+                  {message.content}
+                </div>
+              </div>
+            {:else if message.role === "assistant"}
+              <div class="tlwd-mb-4">
+                <div class="tlwd-text-xs tlwd-text-neutral-400 tlwd-mb-1">Assistant:</div>
+                <div class="tlwd-text-sm tlwd-text-neutral-100 tlwd-whitespace-pre-wrap tlwd-leading-relaxed">
+                  {message.content}
+                </div>
+              </div>
+            {/if}
+          {/each}
+          
+          <!-- Current streaming response (only show if streaming) -->
+          {#if responseText && isStreaming}
+            <div class="tlwd-mb-4">
+              <div class="tlwd-text-xs tlwd-text-neutral-400 tlwd-mb-1">Assistant:</div>
+              <div class="tlwd-text-sm tlwd-text-neutral-100 tlwd-whitespace-pre-wrap tlwd-leading-relaxed">
+                {responseText}
+                <span class="tlwd-inline-block tlwd-w-2 tlwd-h-4 tlwd-bg-neutral-400 tlwd-ml-1 tlwd-animate-pulse">|</span>
+              </div>
+            </div>
+          {:else if isStreaming && !responseText}
+            <div class="tlwd-mb-4">
+              <div class="tlwd-text-xs tlwd-text-neutral-400 tlwd-mb-1">Assistant:</div>
+              <span class="tlwd-text-neutral-400 tlwd-italic">Waiting for response...</span>
+            </div>
+          {/if}
+        </div>
+
+        <!-- Error Message -->
+        {#if showError && errorMessage}
+          <div class="tlwd-mb-3 tlwd-p-3 tlwd-bg-red-900/20 tlwd-border tlwd-border-red-700/50 tlwd-rounded-lg">
+            <div class="tlwd-flex tlwd-items-center tlwd-gap-2">
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke-width={2.5}
+                stroke="currentColor"
+                class="tlwd-size-5 tlwd-text-red-400"
+              >
+                <path
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"
+                />
+              </svg>
+              <p class="tlwd-text-sm tlwd-text-red-300">{errorMessage}</p>
+            </div>
+          </div>
+        {/if}
+
+        <!-- Follow-up Input -->
+        <div class="tlwd-border-t tlwd-border-gray-700 tlwd-pt-3">
+          <form
+            on:submit|preventDefault={sendFollowUp}
+            class="tlwd-flex tlwd-items-center tlwd-gap-2"
+          >
+            <input
+              id="open-webui-followup-input"
+              type="text"
+              placeholder="Ask a follow-up question..."
+              bind:value={followUpInput}
+              disabled={isStreaming}
+              class="tlwd-flex-1 tlwd-px-3 tlwd-py-2 tlwd-text-sm tlwd-bg-gray-800/50 tlwd-border tlwd-border-gray-700 tlwd-rounded-lg tlwd-text-neutral-100 placeholder:tlwd-text-neutral-500 tlwd-outline-none focus:tlwd-border-gray-600 disabled:tlwd-opacity-50 disabled:tlwd-cursor-not-allowed"
+              autocomplete="off"
+            />
+            <button
+              type="submit"
+              disabled={!followUpInput.trim() || isStreaming}
+              class="tlwd-px-4 tlwd-py-2 tlwd-text-sm tlwd-font-medium tlwd-bg-blue-600 hover:tlwd-bg-blue-700 disabled:tlwd-opacity-50 disabled:tlwd-cursor-not-allowed tlwd-text-white tlwd-rounded-lg tlwd-transition-colors tlwd-outline-none tlwd-border-none"
+            >
+              Send
+            </button>
+          </form>
+          
+          <!-- Footer -->
+          <div class="tlwd-mt-3 tlwd-flex tlwd-items-center tlwd-justify-between">
+            <div class="tlwd-text-xs tlwd-text-neutral-400">
+              Press Escape to close
+            </div>
+            <button
+              class="tlwd-text-xs tlwd-text-neutral-300 hover:tlwd-text-neutral-100 tlwd-cursor-pointer tlwd-outline-none tlwd-border-none tlwd-bg-transparent tlwd-transition-colors"
+              on:click={() => {
+                // Copy full conversation to clipboard
+                const fullConversation = conversationHistory
+                  .filter(m => m.role !== "system")
+                  .map(m => `${m.role === "user" ? "You" : "Assistant"}: ${m.content}`)
+                  .join("\n\n");
+                navigator.clipboard.writeText(fullConversation);
+              }}
+              type="button"
+            >
+              Copy conversation
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 {/if}
