@@ -147,7 +147,7 @@ function isValidUrl(urlString) {
 }
 
 // Security: Validate message actions
-const ALLOWED_ACTIONS = ['getSelection', 'writeText', 'fetchModels', 'toggleSearch', 'encryptApiKey', 'decryptApiKey'];
+const ALLOWED_ACTIONS = ['getSelection', 'writeText', 'fetchModels', 'toggleSearch', 'encryptApiKey', 'decryptApiKey', 'createChat'];
 
 // Rate Limiting Configuration
 const RATE_LIMITS = {
@@ -436,6 +436,64 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
       try {
         const decrypted = await decryptApiKey(request.encryptedApiKey);
         sendResponse({ decrypted: decrypted });
+      } catch (error) {
+        sendResponse({ error: error.message });
+      }
+    })();
+    return true; // Keep channel open for async response
+  } else if (request.action == "createChat") {
+    // Create a chat conversation in OpenWebUI via API
+    (async () => {
+      // Security: Validate URL to prevent SSRF
+      if (!isValidUrl(request.url)) {
+        sendResponse({ error: "Invalid URL format" });
+        return;
+      }
+      
+      // Decrypt API key if provided
+      let decryptedKey = request.api_key;
+      if (request.api_key) {
+        try {
+          decryptedKey = await decryptApiKey(request.api_key);
+        } catch (error) {
+          console.error("Extension: Failed to decrypt API key for createChat:", error);
+          // Use as-is (might be unencrypted for backward compatibility)
+        }
+      }
+      
+      // Security: Validate request body
+      if (!request.body || typeof request.body !== 'object') {
+        sendResponse({ error: "Invalid request body" });
+        return;
+      }
+      
+      const apiUrl = `${request.url}/api/chats`;
+      if (!isValidUrl(apiUrl)) {
+        sendResponse({ error: "Invalid API URL" });
+        return;
+      }
+      
+      try {
+        const res = await fetch(apiUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(decryptedKey && { Authorization: `Bearer ${decryptedKey}` }),
+          },
+          body: JSON.stringify(request.body),
+        });
+        
+        // CSP Validation: Check response headers
+        validateCSPHeaders(res);
+        
+        if (!res.ok) {
+          const errorText = await res.text();
+          sendResponse({ error: `HTTP ${res.status}: ${errorText}` });
+          return;
+        }
+        
+        const data = await res.json();
+        sendResponse({ data: data });
       } catch (error) {
         sendResponse({ error: error.message });
       }
