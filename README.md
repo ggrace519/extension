@@ -1,10 +1,56 @@
 # Open WebUI Chrome Extension
 
+> **Note**: This is an enhanced fork of the [Open WebUI Extension](https://github.com/open-webui/extension) with additional security features and improvements. All credit goes to the amazing [Open WebUI](https://github.com/open-webui/open-webui) team for building this incredible ecosystem!
+
 A Chrome extension that provides quick access to Open WebUI with a spotlight-style search interface. Select text on any webpage and get AI-powered responses directly in your input fields, or open searches in Open WebUI.
 
 ![Extension Demo](./demo.gif)
 
+## 🎉 Credits & Acknowledgments
+
+This extension is built on top of the excellent work by the [Open WebUI](https://github.com/open-webui/open-webui) project. Open WebUI is an extensible, feature-rich, and user-friendly self-hosted WebUI designed to operate entirely offline. It supports various LLM runners, including Ollama, OpenAI, and more.
+
+**Original Project**: [open-webui/extension](https://github.com/open-webui/extension)  
+**Open WebUI**: [open-webui/open-webui](https://github.com/open-webui/open-webui)
+
+## ✨ Enhancements in This Fork
+
+This fork includes several security and feature enhancements:
+
+### 🔐 Security Enhancements
+
+- **API Key Encryption**: API keys are encrypted using AES-256-GCM before storage, providing an additional layer of security beyond Chrome's built-in storage encryption
+- **Rate Limiting**: Implemented sensible rate limits to prevent API abuse:
+  - Chat completions: 10 requests per minute
+  - Model fetching: 5 requests per minute
+  - General API calls: 20 requests per minute
+- **SSRF Protection**: URL validation prevents Server-Side Request Forgery attacks
+- **Input Validation & Sanitization**: All user inputs are validated and sanitized before being sent to APIs
+- **Content Security Policy (CSP)**: CSP configured and validated for secure content loading
+- **Message Action Validation**: Strict validation of all messages between content scripts and background worker
+- **Comprehensive Security Documentation**: See [SECURITY.md](./SECURITY.md) for detailed security information
+
+### 🚀 Feature Enhancements
+
+- **Conversation History**: Full conversation history with context preservation for multi-turn interactions
+- **Follow-up Questions**: Ask follow-up questions directly in the response popup without starting a new conversation
+- **Response Popup**: Dedicated popup modal for AI responses with streaming display
+- **Copy Conversation**: One-click copy of entire conversation history
+- **Improved Error Handling**: User-friendly error messages, especially for rate limit violations
+- **Better UX**: Auto-focus on input fields, improved keyboard shortcuts, and smoother interactions
+
+### 📋 Technical Improvements
+
+- **Better Error Recovery**: Graceful handling of extension context invalidation
+- **Improved DOM Timing**: Better handling of DOM readiness for content script injection
+- **Enhanced Keyboard Shortcuts**: More reliable shortcut handling using Chrome's Commands API
+- **Streaming Response Improvements**: Better handling of streaming AI responses with proper cleanup
+
+For a complete list of security features and implementation details, see [SECURITY.md](./SECURITY.md).
+
 ## Features
+
+### Core Features (from Original Project)
 
 - **Spotlight Search**: Press `Cmd/Ctrl + Space + Shift` to open a quick search interface
 - **Text Selection**: Automatically captures selected text when opening the search
@@ -12,6 +58,15 @@ A Chrome extension that provides quick access to Open WebUI with a spotlight-sty
 - **Open WebUI Integration**: Seamlessly connects to your Open WebUI instance
 - **Model Selection**: Choose from available models in your Open WebUI setup
 - **Streaming Responses**: Real-time streaming of AI responses
+
+### Enhanced Features (This Fork)
+
+- **Conversation History**: Maintains full conversation context across multiple interactions
+- **Follow-up Questions**: Ask follow-up questions in the response popup
+- **Response Popup**: Dedicated modal for viewing AI responses with conversation history
+- **Encrypted Storage**: API keys encrypted with AES-256-GCM
+- **Rate Limiting**: Protection against API abuse
+- **Enhanced Security**: Multiple layers of security validation and protection
 
 ## Prerequisites
 
@@ -95,8 +150,13 @@ To reset your configuration:
 
 1. Select text on any webpage
 2. Press `Cmd/Ctrl + Enter + Shift`
-3. The AI response will be streamed directly into the active input or textarea field
-4. Make sure you have an input or textarea focused before using this feature
+3. A popup will appear showing the streaming AI response
+4. **Ask Follow-up Questions**: Type a follow-up question in the input field at the bottom of the popup
+5. Press `Enter` or click "Send" to continue the conversation
+6. The conversation history is maintained, so the AI has full context
+7. Press `Escape` to close the popup
+
+**Note**: The response can also be written directly to active input/textarea fields if one is focused.
 
 ### Closing the Search
 
@@ -196,10 +256,35 @@ The extension requires the following permissions:
 - `host_permissions: <all_urls>` - To work on all websites
 - Content scripts on all URLs - To provide the search interface
 
+## Security
+
+This fork includes comprehensive security enhancements. For detailed security information, see [SECURITY.md](./SECURITY.md).
+
+**Key Security Features**:
+- ✅ AES-256-GCM encryption for API keys
+- ✅ Rate limiting to prevent abuse
+- ✅ SSRF protection via URL validation
+- ✅ Input sanitization and validation
+- ✅ Content Security Policy (CSP)
+- ✅ Message action validation
+
 ## License
 
-[Add your license information here]
+This project maintains the same license as the original [Open WebUI Extension](https://github.com/open-webui/extension).
 
 ## Contributing
 
-[Add contribution guidelines here]
+This is a fork with enhancements. If you'd like to contribute:
+
+1. **To this fork**: Feel free to open issues or pull requests here
+2. **To the original project**: Consider contributing to [open-webui/extension](https://github.com/open-webui/extension) for features that benefit everyone
+3. **To Open WebUI**: Check out [open-webui/open-webui](https://github.com/open-webui/open-webui) for the main project
+
+## Differences from Original
+
+This fork focuses on:
+- **Security**: Enhanced encryption, validation, and protection mechanisms
+- **User Experience**: Conversation history, follow-up questions, and improved UI
+- **Reliability**: Better error handling and recovery mechanisms
+
+If you prefer the original version without these enhancements, check out the [original extension](https://github.com/open-webui/extension).
