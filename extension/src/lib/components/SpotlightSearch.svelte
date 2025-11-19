@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { generateOpenAIChatCompletion, getModels } from "../apis";
-  import { splitStream } from "../utils";
+  import { splitStream, renderMarkdown } from "../utils";
 
   // ========================================================================
   // ENHANCEMENT: Response Popup and Conversation Management
@@ -177,7 +177,7 @@
   // Displays the summary in the response popup.
   // ========================================================================
   // Function to summarize page content
-  const summarizePage = async (content: string) => {
+  const summarizePage = async (content: string): Promise<void> => {
     if (!content || content.trim().length === 0) {
       console.warn("Extension: No content to summarize");
       errorMessage = "No content could be extracted from this page.";
@@ -236,7 +236,7 @@
     conversationHistory = [
       {
         role: "system",
-        content: "You are a helpful assistant that summarizes web page content. Ignore navigation menus, advertisements, cookie notices, footers, headers, and other non-content elements. Focus on the main article or content of the page. Provide a clear, concise summary."
+        content: "You are a helpful assistant that summarizes web page content. Ignore navigation menus, advertisements, cookie notices, footers, headers, and other non-content elements. Focus on the main article or content of the page. Provide a clear, concise summary. You can use markdown formatting (headers, lists, code blocks, bold, italic, etc.) to make your response more readable and well-structured."
       },
       {
         role: "user",
@@ -348,6 +348,216 @@
       
       // Check if it's a rate limit error
       const errorMsg = error?.message || String(error);
+      if (errorMsg.includes("Rate limit exceeded")) {
+        errorMessage = errorMsg;
+        showError = true;
+        showResponse = true;
+        setTimeout(() => {
+          showError = false;
+          errorMessage = "";
+        }, 5000);
+      } else {
+        errorMessage = `Error: ${errorMsg}`;
+        showError = true;
+        showResponse = true;
+        setTimeout(() => {
+          showError = false;
+          errorMessage = "";
+        }, 5000);
+      }
+      
+      isStreaming = false;
+    }
+  };
+
+  // ========================================================================
+  // ENHANCEMENT: Explain Text Feature
+  // ========================================================================
+  // Explains selected text using AI. Uses a specialized system prompt to
+  // provide clear definitions, examples, related concepts, and background
+  // information. Displays the explanation in the response popup.
+  // ========================================================================
+  // Function to explain selected text
+  const explainText = async (selectedText: string): Promise<void> => {
+    if (!selectedText || selectedText.trim().length === 0) {
+      console.warn("Extension: No text to explain");
+      errorMessage = "No text was selected. Please select some text and try again.";
+      showError = true;
+      showResponse = true;
+      setTimeout(() => {
+        showError = false;
+        errorMessage = "";
+      }, 5000);
+      return;
+    }
+
+    // Get current config
+    let currentUrl = url;
+    let currentKey = key;
+    let currentModel = model;
+
+    try {
+      const storedConfig = await chrome.storage.local.get(["url", "key", "model"]);
+      if (storedConfig.url) currentUrl = storedConfig.url;
+      if (storedConfig.model) currentModel = storedConfig.model;
+      
+      // Decrypt API key if it exists
+      if (storedConfig.key) {
+        try {
+          const decryptionResponse = await chrome.runtime.sendMessage({
+            action: "decryptApiKey",
+            encryptedApiKey: storedConfig.key
+          });
+          
+          if (decryptionResponse.error) {
+            console.error("Extension: Failed to decrypt API key:", decryptionResponse.error);
+            currentKey = storedConfig.key; // Use as-is (backward compatibility)
+          } else {
+            currentKey = decryptionResponse.decrypted;
+          }
+        } catch (error) {
+          console.error("Extension: Error decrypting API key:", error);
+          currentKey = storedConfig.key; // Use as-is (backward compatibility)
+        }
+      }
+    } catch (error) {
+      console.error("Extension: Error getting config:", error);
+    }
+
+    // Check if we have valid config
+    if (!currentUrl || !currentKey || !currentModel) {
+      console.warn("Extension: Missing configuration. Please configure the extension first.");
+      showConfig = true;
+      return;
+    }
+
+    // Initialize conversation with specialized system prompt for text explanation
+    responseQuery = selectedText.substring(0, 100);
+    responseText = "";
+    conversationHistory = [
+      {
+        role: "system",
+        content: `I need help understanding a concept or term mentioned in this text: ${selectedText}\n\nPlease explain this term/concept in simple, clear language. Provide a definition and offer examples to illustrate your point.\n\nIf there are any related ideas or concepts that I should know about, please summarize those as well.\n\nAdditionally, if you can provide any context or background information that might be helpful for understanding the term/concept, please do so.\n\nOnly use the selected text: The generated response should only use the text that was selected by the user and not include any external information unless it is directly relevant to the concept being explained.\n\nYou can use markdown formatting (headers, lists, code blocks, bold, italic, etc.) to make your explanation more readable and well-structured.`
+      },
+      {
+        role: "user",
+        content: selectedText
+      }
+    ];
+    showResponse = true;
+    isStreaming = true;
+    showError = false;
+    errorMessage = "";
+
+    // Determine endpoint
+    const isOpenAI = models.length > 0 
+      ? models.find((m) => m.id === currentModel)?.owned_by === "openai" ?? false
+      : false;
+    
+    const endpoint = isOpenAI ? `${currentUrl}/openai` : `${currentUrl}/ollama/v1`;
+
+    try {
+      const [res, controller] = await generateOpenAIChatCompletion(
+        currentKey,
+        {
+          model: currentModel,
+          messages: conversationHistory,
+          stream: true,
+        },
+        endpoint
+      );
+
+      if (res && res.ok) {
+        const reader = res.body
+          .pipeThrough(new TextDecoderStream())
+          .pipeThrough(splitStream("\n"))
+          .getReader();
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) {
+            break;
+          }
+
+          try {
+            let lines = value.split("\n");
+            for (const line of lines) {
+              if (line !== "") {
+                if (line === "data: [DONE]") {
+                  // Will handle after loop
+                } else {
+                  let data = JSON.parse(line.replace(/^data: /, ""));
+                  if (!("request_id" in data)) {
+                    const content = data.choices[0].delta.content ?? "";
+                    responseText += content;
+                    
+                    if (responseContainer) {
+                      setTimeout(() => {
+                        responseContainer.scrollTop = responseContainer.scrollHeight;
+                      }, 0);
+                    }
+                  }
+                }
+              }
+            }
+          } catch (error) {
+            console.log(error);
+          }
+        }
+        
+        // Add assistant response to conversation history after streaming completes
+        try {
+          if (responseText) {
+            const alreadyInHistory = conversationHistory.some(
+              m => m.role === "assistant" && m.content === responseText
+            );
+            
+            if (!alreadyInHistory) {
+              conversationHistory = [...conversationHistory, {
+                role: "assistant",
+                content: responseText,
+              }];
+            }
+          }
+          isStreaming = false;
+          responseText = "";
+          
+          // Focus the follow-up input after response completes
+          setTimeout(() => {
+            const inputElement = document.getElementById("open-webui-followup-input");
+            if (inputElement) {
+              inputElement.focus();
+            }
+          }, 100);
+        } catch (historyError) {
+          console.error("Extension: Error adding response to history:", historyError);
+          isStreaming = false;
+        }
+      } else {
+        console.error("Extension: API request failed:", res);
+        showResponse = false;
+        isStreaming = false;
+        errorMessage = "Failed to get explanation. Please check your configuration.";
+        showError = true;
+        setTimeout(() => {
+          showError = false;
+          errorMessage = "";
+        }, 5000);
+      }
+    } catch (error) {
+      // Extension context invalidated errors happen when extension is reloaded - handle gracefully
+      const errorMsg = error?.message || String(error);
+      
+      if (errorMsg.includes("Extension context invalidated")) {
+        // Extension was reloaded - just stop streaming, don't show error
+        isStreaming = false;
+        showResponse = false;
+        return;
+      }
+      
+      console.error("Extension: Error explaining text:", error);
+      
+      // Check if it's a rate limit error
       if (errorMsg.includes("Rate limit exceeded")) {
         errorMessage = errorMsg;
         showError = true;
@@ -681,6 +891,11 @@
   };
 
   onMount(async () => {
+    // Only initialize in main frame to avoid duplicate processing when all_frames: true
+    if (window !== window.top) {
+      return;
+    }
+    
     // Store toggle function globally so injected scripts can call it
     (window as any).openWebUIToggleSearch = toggleSearch;
     
@@ -698,25 +913,75 @@
     };
     window.addEventListener("open-webui-summarize-page", handleSummarizeEvent as EventListener);
     
+    // Listen for custom event for explain text (fallback)
+    // Only process in main frame to avoid duplicate processing when all_frames: true
+    let isExplaining = false;
+    const handleExplainTextEvent = (event: CustomEvent) => {
+      // Only process in main frame and prevent duplicate processing
+      if (window === window.top && !isExplaining && event.detail && event.detail.text) {
+        isExplaining = true;
+        explainText(event.detail.text).finally(() => {
+          isExplaining = false;
+        });
+      }
+    };
+    window.addEventListener("open-webui-explain-text", handleExplainTextEvent as EventListener);
+    
     // Also listen for messages as fallback
+    // Only process in main frame to avoid duplicate processing when all_frames: true
+    let isSummarizing = false;
     chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-      console.log("Content script received message:", request);
       if (request.action === "toggleSearch") {
-        console.log("Toggling search interface");
-        toggleSearch();
+        // Only process in main frame
+        if (window === window.top) {
+          toggleSearch();
+        }
         sendResponse({ success: true });
       } else if (request.action === "summarizePage") {
-        if (request.error) {
-          console.error("Extension: Error from background script:", request.error);
-          errorMessage = request.error;
-          showError = true;
-          showResponse = true;
-          setTimeout(() => {
-            showError = false;
-            errorMessage = "";
-          }, 5000);
-        } else if (request.content) {
-          summarizePage(request.content);
+        // Only process in main frame and prevent duplicate processing
+        if (window === window.top && !isSummarizing) {
+          isSummarizing = true;
+          if (request.error) {
+            console.error("Extension: Error from background script:", request.error);
+            errorMessage = request.error;
+            showError = true;
+            showResponse = true;
+            setTimeout(() => {
+              showError = false;
+              errorMessage = "";
+              isSummarizing = false;
+            }, 5000);
+          } else if (request.content) {
+            summarizePage(request.content).finally(() => {
+              isSummarizing = false;
+            });
+          } else {
+            isSummarizing = false;
+          }
+        }
+        sendResponse({ success: true });
+      } else if (request.action === "explainText") {
+        // Only process in main frame and prevent duplicate processing
+        // Use the same isExplaining flag as the custom event handler
+        if (window === window.top && !isExplaining) {
+          isExplaining = true;
+          if (request.error) {
+            console.error("Extension: Error from background script:", request.error);
+            errorMessage = request.error;
+            showError = true;
+            showResponse = true;
+            setTimeout(() => {
+              showError = false;
+              errorMessage = "";
+              isExplaining = false;
+            }, 5000);
+          } else if (request.text) {
+            explainText(request.text).finally(() => {
+              isExplaining = false;
+            });
+          } else {
+            isExplaining = false;
+          }
         }
         sendResponse({ success: true });
       }
@@ -824,7 +1089,7 @@
             conversationHistory = [
               {
                 role: "system",
-                content: "You are a helpful assistant.",
+                content: "You are a helpful assistant. You can use markdown formatting (headers, lists, code blocks, bold, italic, etc.) to make your responses more readable and well-structured.",
               },
               {
                 role: "user",
@@ -1058,20 +1323,25 @@
         showConfig = false;
         
         // Try to load models in the background (non-blocking)
-        try {
-          models = await getModels(key, _storageCache.url);
-          // Models loaded successfully, but config screen stays hidden
-        } catch (error) {
-          // CORS errors are expected when loading models from other sites - this is non-critical
-          // Rate limit errors are also non-critical for background loading
-          const errorMsg = error?.message || String(error);
-          if (!errorMsg.includes("CORS") && 
-              !errorMsg.includes("Failed to fetch") && 
-              !errorMsg.includes("Rate limit exceeded")) {
-            console.log("Failed to load models (non-critical):", error);
+        // Only load if models haven't been loaded yet (prevent duplicate loading)
+        if (models.length === 0) {
+          try {
+            models = await getModels(key, _storageCache.url);
+            // Models loaded successfully, but config screen stays hidden
+          } catch (error) {
+            // CORS errors are expected when loading models from other sites - this is non-critical
+            // Rate limit errors are also non-critical for background loading
+            // Extension context invalidated errors happen when extension is reloaded - ignore them
+            const errorMsg = error?.message || String(error);
+            if (!errorMsg.includes("CORS") && 
+                !errorMsg.includes("Failed to fetch") && 
+                !errorMsg.includes("Rate limit exceeded") &&
+                !errorMsg.includes("Extension context invalidated")) {
+              console.log("Failed to load models (non-critical):", error);
+            }
+            // Models failed to load, but we still have config - keep config screen hidden
+            // User can still use the extension with the stored model
           }
-          // Models failed to load, but we still have config - keep config screen hidden
-          // User can still use the extension with the stored model
         }
       } else {
         // Missing required config - show config screen
@@ -1086,6 +1356,7 @@
       document.removeEventListener("keydown", down);
       window.removeEventListener("open-webui-toggle-search", handleToggleEvent);
       window.removeEventListener("open-webui-summarize-page", handleSummarizeEvent as EventListener);
+      window.removeEventListener("open-webui-explain-text", handleExplainTextEvent as EventListener);
       delete (window as any).openWebUIToggleSearch;
     };
   });
@@ -1368,6 +1639,7 @@
   <div
     role="dialog"
     aria-modal="true"
+    id="openwebui-response-modal"
     class="tlwd-fixed tlwd-top-0 tlwd-right-0 tlwd-left-0 tlwd-bottom-0 tlwd-w-full tlwd-min-h-screen tlwd-h-screen tlwd-flex tlwd-justify-center tlwd-z-[9999999999] tlwd-overflow-hidden tlwd-overscroll-contain"
             on:mousedown={() => {
               showResponse = false;
@@ -1378,19 +1650,19 @@
               isStreaming = false;
             }}
   >
-    <div class="tlwd-m-auto tlwd-max-w-3xl tlwd-w-full tlwd-pb-32 tlwd-px-4">
+    <div class="tlwd-m-auto tlwd-max-w-4xl tlwd-w-full tlwd-pb-32 tlwd-px-4">
       <!-- svelte-ignore a11y-click-events-have-key-events -->
       <!-- svelte-ignore a11y-no-static-element-interactions -->
       <div
         role="dialog"
         aria-modal="true"
-        class="tlwd-w-full tlwd-flex tlwd-flex-col tlwd-justify-between tlwd-py-4 tlwd-px-5 tlwd-rounded-2xl tlwd-outline tlwd-outline-1 tlwd-outline-gray-850 tlwd-backdrop-blur-3xl tlwd-bg-gray-850/70 shadow-4xl modal-animation tlwd-max-h-[80vh] tlwd-overflow-hidden tlwd-flex tlwd-flex-col"
+        class="tlwd-w-full tlwd-flex tlwd-flex-col tlwd-justify-between tlwd-py-5 tlwd-px-6 tlwd-rounded-2xl tlwd-outline tlwd-outline-1 tlwd-outline-gray-850 tlwd-backdrop-blur-3xl tlwd-bg-gray-850/70 shadow-4xl modal-animation tlwd-max-h-[85vh] tlwd-overflow-hidden tlwd-flex tlwd-flex-col"
         on:mousedown={(e) => {
           e.stopPropagation();
         }}
       >
         <!-- Header -->
-        <div class="tlwd-flex tlwd-items-center tlwd-justify-between tlwd-mb-4 tlwd-pb-3 tlwd-border-b tlwd-border-gray-700">
+        <div class="tlwd-flex tlwd-items-center tlwd-justify-between tlwd-mb-5 tlwd-pb-4 tlwd-border-b tlwd-border-gray-700">
           <div class="tlwd-flex tlwd-items-center tlwd-gap-2">
             <svg
               xmlns="http://www.w3.org/2000/svg"
@@ -1406,7 +1678,7 @@
                 d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 0 0-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 0 0 3.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 0 0 3.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 0 0-3.09 3.09ZM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 0 0-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 0 0 2.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 0 0 2.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 0 0-2.456 2.456ZM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 0 0-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 0 0 1.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 0 0 1.423 1.423l1.183.394-1.183.394a2.25 2.25 0 0 0-1.423 1.423Z"
               />
             </svg>
-            <h3 class="tlwd-text-lg tlwd-font-semibold tlwd-text-neutral-100">AI Response</h3>
+            <h3 class="tlwd-text-xl tlwd-font-semibold tlwd-text-neutral-100">AI Response</h3>
           </div>
           <button
             class="tlwd-flex tlwd-items-center tlwd-bg-transparent tlwd-text-neutral-400 hover:tlwd-text-neutral-100 tlwd-cursor-pointer tlwd-p-1 tlwd-outline-none tlwd-border-none tlwd-transition-colors"
@@ -1444,17 +1716,17 @@
         >
           {#each conversationHistory as message, index}
             {#if message.role === "user"}
-              <div class="tlwd-mb-4">
-                <div class="tlwd-text-xs tlwd-text-neutral-400 tlwd-mb-1">You:</div>
-                <div class="tlwd-text-sm tlwd-text-neutral-200 tlwd-bg-gray-800/50 tlwd-rounded-lg tlwd-p-3">
+              <div class="tlwd-mb-5">
+                <div class="tlwd-text-sm tlwd-text-neutral-400 tlwd-mb-2">You:</div>
+                <div class="tlwd-text-base tlwd-text-neutral-200 tlwd-bg-gray-800/50 tlwd-rounded-lg tlwd-p-4">
                   {message.content}
                 </div>
               </div>
             {:else if message.role === "assistant"}
-              <div class="tlwd-mb-4">
-                <div class="tlwd-text-xs tlwd-text-neutral-400 tlwd-mb-1">Assistant:</div>
-                <div class="tlwd-text-sm tlwd-text-neutral-100 tlwd-whitespace-pre-wrap tlwd-leading-relaxed">
-                  {message.content}
+              <div class="tlwd-mb-5">
+                <div class="tlwd-text-sm tlwd-text-neutral-400 tlwd-mb-2">Assistant:</div>
+                <div class="tlwd-text-base tlwd-text-neutral-100 tlwd-leading-relaxed markdown-content">
+                  {@html renderMarkdown(message.content)}
                 </div>
               </div>
             {/if}
@@ -1462,17 +1734,17 @@
           
           <!-- Current streaming response (only show if streaming) -->
           {#if responseText && isStreaming}
-            <div class="tlwd-mb-4">
-              <div class="tlwd-text-xs tlwd-text-neutral-400 tlwd-mb-1">Assistant:</div>
-              <div class="tlwd-text-sm tlwd-text-neutral-100 tlwd-whitespace-pre-wrap tlwd-leading-relaxed">
-                {responseText}
+            <div class="tlwd-mb-5">
+              <div class="tlwd-text-sm tlwd-text-neutral-400 tlwd-mb-2">Assistant:</div>
+              <div class="tlwd-text-base tlwd-text-neutral-100 tlwd-leading-relaxed markdown-content">
+                {@html renderMarkdown(responseText)}
                 <span class="tlwd-inline-block tlwd-w-2 tlwd-h-4 tlwd-bg-neutral-400 tlwd-ml-1 tlwd-animate-pulse">|</span>
               </div>
             </div>
           {:else if isStreaming && !responseText}
-            <div class="tlwd-mb-4">
-              <div class="tlwd-text-xs tlwd-text-neutral-400 tlwd-mb-1">Assistant:</div>
-              <span class="tlwd-text-neutral-400 tlwd-italic">Waiting for response...</span>
+            <div class="tlwd-mb-5">
+              <div class="tlwd-text-sm tlwd-text-neutral-400 tlwd-mb-2">Assistant:</div>
+              <span class="tlwd-text-base tlwd-text-neutral-400 tlwd-italic">Waiting for response...</span>
             </div>
           {/if}
         </div>
@@ -1495,7 +1767,7 @@
                   d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"
                 />
               </svg>
-              <p class="tlwd-text-sm tlwd-text-red-300">{errorMessage}</p>
+              <p class="tlwd-text-base tlwd-text-red-300">{errorMessage}</p>
             </div>
           </div>
         {/if}
@@ -1512,13 +1784,13 @@
               placeholder="Ask a follow-up question..."
               bind:value={followUpInput}
               disabled={isStreaming}
-              class="tlwd-flex-1 tlwd-px-3 tlwd-py-2 tlwd-text-sm tlwd-bg-gray-800/50 tlwd-border tlwd-border-gray-700 tlwd-rounded-lg tlwd-text-neutral-100 placeholder:tlwd-text-neutral-500 tlwd-outline-none focus:tlwd-border-gray-600 disabled:tlwd-opacity-50 disabled:tlwd-cursor-not-allowed"
+              class="tlwd-flex-1 tlwd-px-4 tlwd-py-3 tlwd-text-base tlwd-bg-gray-800/50 tlwd-border tlwd-border-gray-700 tlwd-rounded-lg tlwd-text-neutral-100 placeholder:tlwd-text-neutral-500 tlwd-outline-none focus:tlwd-border-gray-600 disabled:tlwd-opacity-50 disabled:tlwd-cursor-not-allowed"
               autocomplete="off"
             />
             <button
               type="submit"
               disabled={!followUpInput.trim() || isStreaming}
-              class="tlwd-px-4 tlwd-py-2 tlwd-text-sm tlwd-font-medium tlwd-bg-blue-600 hover:tlwd-bg-blue-700 disabled:tlwd-opacity-50 disabled:tlwd-cursor-not-allowed tlwd-text-white tlwd-rounded-lg tlwd-transition-colors tlwd-outline-none tlwd-border-none"
+              class="tlwd-px-5 tlwd-py-3 tlwd-text-base tlwd-font-medium tlwd-bg-blue-600 hover:tlwd-bg-blue-700 disabled:tlwd-opacity-50 disabled:tlwd-cursor-not-allowed tlwd-text-white tlwd-rounded-lg tlwd-transition-colors tlwd-outline-none tlwd-border-none"
             >
               Send
             </button>
@@ -1526,12 +1798,12 @@
           
           <!-- Footer -->
           <div class="tlwd-mt-3 tlwd-flex tlwd-items-center tlwd-justify-between">
-            <div class="tlwd-text-xs tlwd-text-neutral-400">
+            <div class="tlwd-text-sm tlwd-text-neutral-400">
               Press Escape to close
             </div>
             <div class="tlwd-flex tlwd-items-center tlwd-gap-3">
               <button
-                class="tlwd-text-xs tlwd-text-blue-400 hover:tlwd-text-blue-300 tlwd-cursor-pointer tlwd-outline-none tlwd-border-none tlwd-bg-transparent tlwd-transition-colors tlwd-flex tlwd-items-center tlwd-gap-1"
+                class="tlwd-text-sm tlwd-text-blue-400 hover:tlwd-text-blue-300 tlwd-cursor-pointer tlwd-outline-none tlwd-border-none tlwd-bg-transparent tlwd-transition-colors tlwd-flex tlwd-items-center tlwd-gap-1"
                 on:click={continueInOpenWebUI}
                 type="button"
                 disabled={conversationHistory.length === 0}
@@ -1553,7 +1825,7 @@
                 Continue in OpenWebUI
               </button>
               <button
-                class="tlwd-text-xs tlwd-text-neutral-300 hover:tlwd-text-neutral-100 tlwd-cursor-pointer tlwd-outline-none tlwd-border-none tlwd-bg-transparent tlwd-transition-colors"
+                class="tlwd-text-sm tlwd-text-neutral-300 hover:tlwd-text-neutral-100 tlwd-cursor-pointer tlwd-outline-none tlwd-border-none tlwd-bg-transparent tlwd-transition-colors"
                 on:click={() => {
                   // Copy full conversation to clipboard
                   const fullConversation = conversationHistory

@@ -173,7 +173,7 @@ function isValidUrl(urlString) {
 // content scripts or malicious code injection.
 // ============================================================================
 // Security: Validate message actions
-const ALLOWED_ACTIONS = ['getSelection', 'writeText', 'fetchModels', 'toggleSearch', 'encryptApiKey', 'decryptApiKey', 'createChat', 'extractPageContent', 'summarizePage'];
+const ALLOWED_ACTIONS = ['getSelection', 'writeText', 'fetchModels', 'toggleSearch', 'encryptApiKey', 'decryptApiKey', 'createChat', 'extractPageContent', 'summarizePage', 'explainText'];
 
 // ============================================================================
 // ENHANCEMENT: Rate Limiting
@@ -345,8 +345,42 @@ function extractPageContentScript() {
   
   const text = (body.innerText || body.textContent || '').trim();
   
-  // Clean up excessive whitespace
-  return text.replace(/\s+/g, ' ').substring(0, 50000); // Limit to 50k chars
+  // Clean up excessive whitespace and return
+  const cleanedText = text.replace(/\s+/g, ' ').substring(0, 50000); // Limit to 50k chars
+  
+  // Return cleaned text if it has meaningful content (at least 50 characters)
+  if (cleanedText.length >= 50) {
+    return cleanedText;
+  }
+  
+  // Strategy 4: Last resort - try to get text from common product/content areas
+  const productSelectors = [
+    '[itemprop="description"]',
+    '.product-description',
+    '.product-details',
+    '.product-info',
+    '.product-content',
+    '[data-product]',
+    '.description',
+    '.details',
+    '.specifications',
+    '.features'
+  ];
+  
+  for (const selector of productSelectors) {
+    const elements = document.querySelectorAll(selector);
+    for (const element of elements) {
+      if (element && isVisible(element)) {
+        const text = (element.innerText || element.textContent || '').trim();
+        if (text.length >= 50) {
+          return text.replace(/\s+/g, ' ').substring(0, 50000);
+        }
+      }
+    }
+  }
+  
+  // If all strategies fail, return whatever text we have (even if short)
+  return cleanedText || '';
 }
 
 // Message handler for extractPageContent
@@ -358,9 +392,15 @@ async function handleExtractPageContent(tabId) {
     });
     
     if (results && results[0] && results[0].result) {
-      return { data: results[0].result };
+      const extractedText = results[0].result;
+      // Check if we got meaningful content (at least 50 characters)
+      if (extractedText && extractedText.trim().length >= 50) {
+        return { data: extractedText };
+      } else {
+        return { error: "Could not extract enough content from this page. The page might be heavily JavaScript-rendered or have minimal text content." };
+      }
     } else {
-      return { error: "No content extracted" };
+      return { error: "No content extracted. The page might be protected or inaccessible." };
     }
   } catch (error) {
     console.error("Extension: Error extracting page content:", error);
@@ -443,7 +483,6 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
     return false;
   }
   
-  console.log(request, sender);
   const id = sender.tab.id;
   
   if (request.action == "getSelection") {
@@ -455,7 +494,6 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
         },
       })
       .then((res) => {
-        console.log(res);
         sendResponse({ data: res[0]["result"] });
       });
     return true; // Keep channel open for async response
@@ -812,56 +850,100 @@ chrome.runtime.onConnect.addListener((port) => {
 // "OpenWebUI Extension" and a child menu "Summarize this Page".
 // ============================================================================
 // Register context menu on extension install/startup
+let isRegisteringMenus = false;
 function registerContextMenus() {
-  // Remove existing menu items to avoid duplicates
+  // Prevent concurrent calls
+  if (isRegisteringMenus) {
+    console.log("Extension: Context menu registration already in progress, skipping...");
+    return;
+  }
+  
+  isRegisteringMenus = true;
+  
+  // Remove all existing menus first to avoid duplicates
   chrome.contextMenus.removeAll(() => {
-    // Check for errors
+    // Ignore errors from removeAll - menus might not exist yet
     if (chrome.runtime.lastError) {
-      console.error("Extension: Error removing context menus:", chrome.runtime.lastError);
-      return;
+      // Silently ignore - this is expected on first install
     }
     
-    // Create "OpenWebUI Extension" menu item (opens search interface)
-    chrome.contextMenus.create({
-      id: 'openwebui-extension',
-      title: 'OpenWebUI Extension',
-      contexts: ['page', 'selection']
-    }, () => {
-      if (chrome.runtime.lastError) {
-        console.error("Extension: Error creating OpenWebUI Extension context menu:", chrome.runtime.lastError);
-      } else {
+    // Small delay to ensure removeAll completes before creating new menus
+    setTimeout(() => {
+      // Create "OpenWebUI Extension" parent menu item
+      chrome.contextMenus.create({
+        id: 'openwebui-extension',
+        title: 'OpenWebUI Extension',
+        contexts: ['page', 'selection', 'editable']
+      }, () => {
+        if (chrome.runtime.lastError) {
+          console.error("Extension: Error creating OpenWebUI Extension context menu:", chrome.runtime.lastError.message);
+          return;
+        }
+        
         console.log("Extension: OpenWebUI Extension context menu created successfully");
-      }
-    });
+        
+        // Small delay to ensure parent menu is fully registered before creating child menus
+        setTimeout(() => {
+          // Create "Summarize Page" as a child menu item under "OpenWebUI Extension"
+          chrome.contextMenus.create({
+            id: 'summarize-page',
+            parentId: 'openwebui-extension',
+            title: 'Summarize Page',
+            contexts: ['page', 'selection']
+          }, () => {
+            if (chrome.runtime.lastError) {
+              console.error("Extension: Error creating summarize context menu:", chrome.runtime.lastError.message);
+            } else {
+              console.log("Extension: Summarize context menu created successfully");
+            }
+          });
+          
+          // Create "Explain This" as a child menu item under "OpenWebUI Extension"
+          chrome.contextMenus.create({
+            id: 'explain-text',
+            parentId: 'openwebui-extension',
+            title: 'Explain This',
+            contexts: ['selection']
+          }, () => {
+            if (chrome.runtime.lastError) {
+              console.error("Extension: Error creating explain text context menu:", chrome.runtime.lastError.message);
+            } else {
+              console.log("Extension: Explain text context menu created successfully");
+            }
+          });
+        }, 50); // Small delay to ensure parent menu is registered
+      });
+    }, 100); // Small delay to ensure removeAll completes
     
-    // Create "Summarize this Page" menu item as separate top-level item
-    chrome.contextMenus.create({
-      id: 'summarize-page',
-      title: 'Summarize this Page',
-      contexts: ['page']
-    }, () => {
-      if (chrome.runtime.lastError) {
-        console.error("Extension: Error creating summarize context menu:", chrome.runtime.lastError);
-      } else {
-        console.log("Extension: Summarize context menu created successfully");
-      }
-    });
+    // Reset flag after a delay to allow menu creation to complete
+    setTimeout(() => {
+      isRegisteringMenus = false;
+    }, 500);
   });
 }
 
-// Register on install
+// Register on install/update (this is the recommended way per Chrome docs)
+// According to Chrome documentation: https://developer.chrome.com/docs/extensions/develop/migrate
+// Context menus should be registered in chrome.runtime.onInstalled
 chrome.runtime.onInstalled.addListener((details) => {
   console.log("Extension: onInstalled event:", details.reason);
-  if (details.reason === 'install' || details.reason === 'update') {
-    registerContextMenus();
-  }
+  // registerContextMenus() already handles removeAll internally
+  registerContextMenus();
 });
 
-// Also register on startup (in case menu was removed)
-// Use a small delay to ensure service worker is ready
-setTimeout(() => {
+// Also register when service worker starts (fallback for Manifest V3)
+// Context menus should persist across service worker restarts, but there are known issues
+// where they can disappear after browser restarts or extension updates.
+// This ensures they're recreated if missing. Duplicate errors are handled gracefully.
+// See: https://developer.chrome.com/docs/extensions/develop/migrate
+chrome.runtime.onStartup.addListener(() => {
+  console.log("Extension: Chrome started, ensuring context menus exist");
   registerContextMenus();
-}, 100);
+});
+
+// Register immediately when service worker loads (for service worker restarts)
+// This handles cases where context menus might be missing after service worker restarts
+registerContextMenus();
 
 // ============================================================================
 // ENHANCEMENT: Context Menu Click Handler
@@ -870,38 +952,7 @@ setTimeout(() => {
 // extracts page content and sends it to the content script for summarization.
 // ============================================================================
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  if (info.menuItemId === 'openwebui-extension') {
-    // Parent menu clicked - open the search interface
-    const url = tab.url || "";
-    if (url.startsWith("chrome://") || 
-        url.startsWith("chrome-extension://") || 
-        url.startsWith("chrome-search://") ||
-        url.startsWith("edge://") ||
-        url.startsWith("about:")) {
-      console.log("Extension cannot access this page:", url);
-      return;
-    }
-    
-    // Send toggle search message to content script
-    chrome.tabs.sendMessage(tab.id, { action: "toggleSearch" }).catch((error) => {
-      // If message fails, try script injection
-      chrome.scripting.executeScript({
-        target: { tabId: tab.id, allFrames: false },
-        func: () => {
-          window.dispatchEvent(new CustomEvent("open-webui-toggle-search", { bubbles: true }));
-          if (window.openWebUIToggleSearch && typeof window.openWebUIToggleSearch === 'function') {
-            try {
-              window.openWebUIToggleSearch();
-            } catch (e) {
-              console.error("Error calling toggle function:", e);
-            }
-          }
-        }
-      }).catch((err) => {
-        console.error("Extension: Error injecting script:", err);
-      });
-    });
-  } else if (info.menuItemId === 'summarize-page') {
+  if (info.menuItemId === 'summarize-page') {
     // Check if page is accessible
     const url = tab.url || "";
     if (url.startsWith("chrome://") || 
@@ -958,6 +1009,64 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       });
     } catch (error) {
       console.error("Extension: Error in context menu handler:", error);
+    }
+  } else if (info.menuItemId === 'explain-text') {
+    // Check if page is accessible
+    const url = tab.url || "";
+    if (url.startsWith("chrome://") || 
+        url.startsWith("chrome-extension://") || 
+        url.startsWith("chrome-search://") ||
+        url.startsWith("edge://") ||
+        url.startsWith("about:")) {
+      console.log("Extension cannot access this page:", url);
+      return;
+    }
+    
+    // Get selected text from context menu info
+    const selectedText = info.selectionText || "";
+    
+    if (!selectedText || selectedText.trim().length === 0) {
+      console.warn("Extension: No text selected for explanation");
+      // Send error message to content script
+      chrome.tabs.sendMessage(tab.id, {
+        action: "explainText",
+        error: "No text was selected. Please select some text and try again."
+      }).catch(() => {
+        // Content script might not be ready, try script injection
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => {
+            console.error("Extension: No text selected for explanation");
+          }
+        });
+      });
+      return;
+    }
+    
+    try {
+      // Send selected text to content script
+      chrome.tabs.sendMessage(tab.id, {
+        action: "explainText",
+        text: selectedText.trim()
+      }).catch((error) => {
+        // If message fails, try script injection as fallback
+        console.log("Message failed, trying script injection:", error);
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: (text) => {
+            // Dispatch custom event that content script can listen for
+            window.dispatchEvent(new CustomEvent("open-webui-explain-text", {
+              bubbles: true,
+              detail: { text: text }
+            }));
+          },
+          args: [selectedText.trim()]
+        }).catch((err) => {
+          console.error("Extension: Error injecting explain text script:", err);
+        });
+      });
+    } catch (error) {
+      console.error("Extension: Error in explain text context menu handler:", error);
     }
   }
 });

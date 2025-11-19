@@ -37,6 +37,8 @@ This fork includes several security and feature enhancements:
 - **Follow-up Questions**: Ask follow-up questions directly in the response popup without starting a new conversation
 - **Response Popup**: Dedicated popup modal for AI responses with streaming display
 - **Copy Conversation**: One-click copy of entire conversation history
+- **Explain This**: Right-click on selected text to get AI-powered explanations with definitions, examples, and related concepts
+- **Summarize Page**: Right-click on any page to get an AI-generated summary of the page content
 - **Improved Error Handling**: User-friendly error messages, especially for rate limit violations
 - **Better UX**: Auto-focus on input fields, improved keyboard shortcuts, and smoother interactions
 
@@ -65,6 +67,8 @@ For a complete list of security features and implementation details, see [SECURI
 - **Conversation History**: Maintains full conversation context across multiple interactions
 - **Follow-up Questions**: Ask follow-up questions in the response popup
 - **Response Popup**: Dedicated modal for viewing AI responses with conversation history
+- **Explain This**: Context menu option to explain selected text with AI-powered explanations
+- **Summarize Page**: Context menu option to summarize entire web pages
 - **Encrypted Storage**: API keys encrypted with AES-256-GCM
 - **Rate Limiting**: Protection against API abuse
 - **Enhanced Security**: Multiple layers of security validation and protection
@@ -159,10 +163,40 @@ To reset your configuration:
 
 **Note**: The response can also be written directly to active input/textarea fields if one is focused.
 
+### Using Context Menu Features
+
+The extension adds two context menu options under "OpenWebUI Extension":
+
+#### Explain This
+
+1. **Select text** on any webpage that you want explained
+2. **Right-click** on the selected text
+3. Choose **"Explain This"** from the context menu
+4. A popup will appear with an AI-powered explanation that includes:
+   - Clear definitions and explanations
+   - Examples to illustrate concepts
+   - Related ideas and concepts
+   - Background information and context
+5. You can ask follow-up questions in the popup
+6. Press `Escape` to close the popup
+
+**Note**: "Explain This" only appears when text is selected.
+
+#### Summarize Page
+
+1. **Right-click** anywhere on a webpage (no text selection needed)
+2. Choose **"Summarize Page"** from the context menu
+3. The extension will extract the main content from the page
+4. A popup will appear with an AI-generated summary
+5. You can ask follow-up questions about the summary
+6. Press `Escape` to close the popup
+
+**Note**: The summarization focuses on main content and ignores navigation, ads, footers, and other non-content elements.
+
 ### Closing the Search
 
-- Press `Escape` to close the search interface
-- Click outside the search modal to close it
+- Press `Escape` to close the search interface or response popup
+- Click outside the modal to close it
 
 ## Development
 
@@ -271,7 +305,11 @@ This fork includes comprehensive security enhancements. For detailed security in
 
 ## License
 
-This project maintains the same license as the original [Open WebUI Extension](https://github.com/open-webui/extension).
+Copyright (c) 2023-2025 Timothy Jaeryang Baek (Open WebUI)
+
+This project is licensed under the same terms as the original [Open WebUI Extension](https://github.com/open-webui/extension). See [LICENSE](./LICENSE) for full license details.
+
+**Important**: This license requires maintaining "Open WebUI" branding in all distributions. The extension name, descriptions, and user-facing text preserve the Open WebUI branding as required by the license terms.
 
 ## Contributing
 

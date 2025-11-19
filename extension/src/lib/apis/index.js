@@ -36,7 +36,10 @@ export const getModels = async (key, url) => {
             return 0; // They are equal
           });
 
-        console.log(models);
+        // Log model count instead of full array to reduce console noise
+        if (models.length > 0) {
+          console.log(`Extension: Loaded ${models.length} model(s)`);
+        }
         resolve(models);
       }
     );

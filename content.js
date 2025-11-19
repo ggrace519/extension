@@ -12,6 +12,11 @@ let checkBodyInterval = null;
 
 // Wait for DOM to be ready before initializing
 function initExtension() {
+  // Only initialize in main frame to avoid duplicate processing when all_frames: true
+  if (window !== window.top) {
+    return;
+  }
+  
   // Prevent multiple calls
   if (initialized) {
     return;
