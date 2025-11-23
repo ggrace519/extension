@@ -126,11 +126,12 @@
 
 .markdown-content h6 {
   font-size: 0.875rem;
-  color: rgb(163 163 163);
+  color: rgb(212 212 212);
 }
 
 .markdown-content p {
   margin-bottom: 1em;
+  color: rgb(245 245 245);
 }
 
 .markdown-content ul,
@@ -149,6 +150,7 @@
 
 .markdown-content li {
   margin-bottom: 0.5em;
+  color: rgb(245 245 245);
 }
 
 .markdown-content li > p {
@@ -225,11 +227,13 @@
   border: 1px solid rgb(55 65 81);
   padding: 0.5em 0.75em;
   text-align: left;
+  color: rgb(245 245 245);
 }
 
 .markdown-content table th {
   background-color: rgb(31 41 55);
   font-weight: 600;
+  color: rgb(245 245 245);
 }
 
 .markdown-content table tr:nth-child(even) {

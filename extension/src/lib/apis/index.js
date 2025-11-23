@@ -1,4 +1,22 @@
+// Helper function to check if Chrome APIs are available
+const isChromeAPIAvailable = () => {
+  try {
+    return typeof chrome !== 'undefined' && 
+           chrome !== null && 
+           typeof chrome.runtime !== 'undefined' && 
+           chrome.runtime !== null &&
+           typeof chrome.runtime.sendMessage !== 'undefined';
+  } catch {
+    return false;
+  }
+};
+
 export const getModels = async (key, url) => {
+  // Check Chrome API availability
+  if (!isChromeAPIAvailable()) {
+    return Promise.reject(new Error("Extension context invalidated - Chrome APIs not available"));
+  }
+  
   // Proxy through background script to avoid CORS
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(
@@ -38,7 +56,7 @@ export const getModels = async (key, url) => {
 
         // Log model count instead of full array to reduce console noise
         if (models.length > 0) {
-          console.log(`Extension: Loaded ${models.length} model(s)`);
+          console.debug(`Extension: Loaded ${models.length} model(s)`);
         }
         resolve(models);
       }
@@ -51,6 +69,11 @@ export const generateOpenAIChatCompletion = async (
   body = {},
   url = "http://localhost:8080"
 ) => {
+  // Check Chrome API availability
+  if (!isChromeAPIAvailable() || typeof chrome.runtime.connect === 'undefined') {
+    return Promise.reject(new Error("Extension context invalidated - Chrome runtime.connect not available"));
+  }
+  
   // Create a port for streaming data from background script
   return new Promise((resolve, reject) => {
     const port = chrome.runtime.connect({ name: "chat-stream" });

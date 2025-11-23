@@ -33,12 +33,23 @@
   const resetConfig = () => {
     console.log("resetConfig");
 
+    if (!isChromeAPIAvailable()) {
+      console.warn("Extension: Chrome APIs not available - cannot reset config");
+      return;
+    }
+
     try {
       chrome.storage.local.clear().then(() => {
         console.log("Value is cleared");
       });
     } catch (error) {
-      console.log(error);
+      const errorMsg = error?.message || String(error);
+      if (errorMsg.includes("Extension context invalidated") || 
+          errorMsg.includes("Cannot read properties of undefined")) {
+        console.warn("Extension: Chrome storage API not available - extension may have been reloaded");
+      } else {
+        console.log(error);
+      }
       // Security: Removed localStorage fallback - chrome.storage.local is more secure
     }
 
@@ -109,6 +120,11 @@
       return;
     }
 
+    if (!isChromeAPIAvailable()) {
+      console.error("Extension: Chrome APIs not available - cannot save config");
+      return;
+    }
+
     try {
       // Encrypt API key before storing
       const encryptionResponse = await chrome.runtime.sendMessage({
@@ -135,7 +151,13 @@
         });
       }
     } catch (error) {
-      console.log(error);
+      const errorMsg = error?.message || String(error);
+      if (errorMsg.includes("Extension context invalidated") || 
+          errorMsg.includes("Cannot read properties of undefined")) {
+        console.warn("Extension: Chrome APIs not available - extension may have been reloaded");
+      } else {
+        console.log(error);
+      }
       // Security: Removed localStorage fallback - chrome.storage.local is more secure
     }
 
@@ -144,6 +166,12 @@
 
   // Function to toggle search interface
   const toggleSearch = async () => {
+    if (!isChromeAPIAvailable()) {
+      console.warn("Extension: Chrome APIs not available - cannot get selection");
+      show = !show;
+      return;
+    }
+
     try {
       const response = await chrome.runtime.sendMessage({
         action: "getSelection",
@@ -153,7 +181,13 @@
         searchValue = response.data;
       }
     } catch (error) {
-      console.log("catch", error);
+      const errorMsg = error?.message || String(error);
+      if (errorMsg.includes("Extension context invalidated") || 
+          errorMsg.includes("Cannot read properties of undefined")) {
+        console.warn("Extension: Chrome runtime API not available");
+      } else {
+        console.log("catch", error);
+      }
     }
 
     show = !show;
@@ -195,32 +229,53 @@
     let currentKey = key;
     let currentModel = model;
 
-    try {
-      const storedConfig = await chrome.storage.local.get(["url", "key", "model"]);
-      if (storedConfig.url) currentUrl = storedConfig.url;
-      if (storedConfig.model) currentModel = storedConfig.model;
-      
-      // Decrypt API key if it exists
-      if (storedConfig.key) {
-        try {
-          const decryptionResponse = await chrome.runtime.sendMessage({
-            action: "decryptApiKey",
-            encryptedApiKey: storedConfig.key
-          });
-          
-          if (decryptionResponse.error) {
-            console.error("Extension: Failed to decrypt API key:", decryptionResponse.error);
-            currentKey = storedConfig.key; // Use as-is (backward compatibility)
-          } else {
-            currentKey = decryptionResponse.decrypted;
+    if (!isChromeAPIAvailable()) {
+      console.warn("Extension: Chrome APIs not available - cannot get config");
+      if (!currentUrl || !currentKey || !currentModel) {
+        showConfig = true;
+        return;
+      }
+    } else {
+      try {
+        const storedConfig = await chrome.storage.local.get(["url", "key", "model"]);
+        if (storedConfig.url) currentUrl = storedConfig.url;
+        if (storedConfig.model) currentModel = storedConfig.model;
+        
+        // Decrypt API key if it exists
+        if (storedConfig.key) {
+          try {
+            const decryptionResponse = await chrome.runtime.sendMessage({
+              action: "decryptApiKey",
+              encryptedApiKey: storedConfig.key
+            });
+            
+            if (decryptionResponse.error) {
+              console.error("Extension: Failed to decrypt API key:", decryptionResponse.error);
+              currentKey = storedConfig.key; // Use as-is (backward compatibility)
+            } else {
+              currentKey = decryptionResponse.decrypted;
+            }
+          } catch (error) {
+            const errorMsg = error?.message || String(error);
+            if (errorMsg.includes("Extension context invalidated") || 
+                errorMsg.includes("Cannot read properties of undefined")) {
+              console.warn("Extension: Chrome runtime API not available");
+              currentKey = storedConfig.key; // Use as-is (backward compatibility)
+            } else {
+              console.error("Extension: Error decrypting API key:", error);
+              currentKey = storedConfig.key; // Use as-is (backward compatibility)
+            }
           }
-        } catch (error) {
-          console.error("Extension: Error decrypting API key:", error);
-          currentKey = storedConfig.key; // Use as-is (backward compatibility)
+        }
+      } catch (error) {
+        const errorMsg = error?.message || String(error);
+        if (errorMsg.includes("Extension context invalidated") || 
+            errorMsg.includes("Cannot read properties of undefined")) {
+          console.warn("Extension: Chrome storage API not available - extension may have been reloaded");
+        } else {
+          console.error("Extension: Error getting config:", error);
         }
       }
-    } catch (error) {
-      console.error("Extension: Error getting config:", error);
     }
 
     // Check if we have valid config
@@ -396,32 +451,53 @@
     let currentKey = key;
     let currentModel = model;
 
-    try {
-      const storedConfig = await chrome.storage.local.get(["url", "key", "model"]);
-      if (storedConfig.url) currentUrl = storedConfig.url;
-      if (storedConfig.model) currentModel = storedConfig.model;
-      
-      // Decrypt API key if it exists
-      if (storedConfig.key) {
-        try {
-          const decryptionResponse = await chrome.runtime.sendMessage({
-            action: "decryptApiKey",
-            encryptedApiKey: storedConfig.key
-          });
-          
-          if (decryptionResponse.error) {
-            console.error("Extension: Failed to decrypt API key:", decryptionResponse.error);
-            currentKey = storedConfig.key; // Use as-is (backward compatibility)
-          } else {
-            currentKey = decryptionResponse.decrypted;
+    if (!isChromeAPIAvailable()) {
+      console.warn("Extension: Chrome APIs not available - cannot get config");
+      if (!currentUrl || !currentKey || !currentModel) {
+        showConfig = true;
+        return;
+      }
+    } else {
+      try {
+        const storedConfig = await chrome.storage.local.get(["url", "key", "model"]);
+        if (storedConfig.url) currentUrl = storedConfig.url;
+        if (storedConfig.model) currentModel = storedConfig.model;
+        
+        // Decrypt API key if it exists
+        if (storedConfig.key) {
+          try {
+            const decryptionResponse = await chrome.runtime.sendMessage({
+              action: "decryptApiKey",
+              encryptedApiKey: storedConfig.key
+            });
+            
+            if (decryptionResponse.error) {
+              console.error("Extension: Failed to decrypt API key:", decryptionResponse.error);
+              currentKey = storedConfig.key; // Use as-is (backward compatibility)
+            } else {
+              currentKey = decryptionResponse.decrypted;
+            }
+          } catch (error) {
+            const errorMsg = error?.message || String(error);
+            if (errorMsg.includes("Extension context invalidated") || 
+                errorMsg.includes("Cannot read properties of undefined")) {
+              console.warn("Extension: Chrome runtime API not available");
+              currentKey = storedConfig.key; // Use as-is (backward compatibility)
+            } else {
+              console.error("Extension: Error decrypting API key:", error);
+              currentKey = storedConfig.key; // Use as-is (backward compatibility)
+            }
           }
-        } catch (error) {
-          console.error("Extension: Error decrypting API key:", error);
-          currentKey = storedConfig.key; // Use as-is (backward compatibility)
+        }
+      } catch (error) {
+        const errorMsg = error?.message || String(error);
+        if (errorMsg.includes("Extension context invalidated") || 
+            errorMsg.includes("Cannot read properties of undefined")) {
+          console.warn("Extension: Chrome storage API not available - extension may have been reloaded");
+        } else {
+          console.error("Extension: Error getting config:", error);
         }
       }
-    } catch (error) {
-      console.error("Extension: Error getting config:", error);
     }
 
     // Check if we have valid config
@@ -594,6 +670,13 @@
       return;
     }
 
+    if (!isChromeAPIAvailable()) {
+      console.warn("Extension: Chrome APIs not available - cannot continue in OpenWebUI");
+      // Fallback: just open the URL
+      window.open(url, "_blank");
+      return;
+    }
+
     try {
       // Get current config (decrypt API key if needed)
       let currentUrl = url;
@@ -615,11 +698,22 @@
               currentKey = storedConfig.key; // Use as-is (backward compatibility)
             }
           } catch (error) {
+            const errorMsg = error?.message || String(error);
+            if (errorMsg.includes("Extension context invalidated") || 
+                errorMsg.includes("Cannot read properties of undefined")) {
+              console.warn("Extension: Chrome runtime API not available");
+            }
             currentKey = storedConfig.key; // Use as-is (backward compatibility)
           }
         }
       } catch (error) {
-        console.error("Extension: Error getting config:", error);
+        const errorMsg = error?.message || String(error);
+        if (errorMsg.includes("Extension context invalidated") || 
+            errorMsg.includes("Cannot read properties of undefined")) {
+          console.warn("Extension: Chrome storage API not available");
+        } else {
+          console.error("Extension: Error getting config:", error);
+        }
       }
 
       // Filter out system messages and format conversation for OpenWebUI
@@ -890,9 +984,30 @@
     }
   };
 
+  // Helper function to check if Chrome APIs are available
+  const isChromeAPIAvailable = (): boolean => {
+    try {
+      return typeof chrome !== 'undefined' && 
+             chrome !== null && 
+             typeof chrome.storage !== 'undefined' && 
+             chrome.storage !== null &&
+             typeof chrome.storage.local !== 'undefined' &&
+             typeof chrome.runtime !== 'undefined' &&
+             chrome.runtime !== null;
+    } catch {
+      return false;
+    }
+  };
+
   onMount(async () => {
     // Only initialize in main frame to avoid duplicate processing when all_frames: true
     if (window !== window.top) {
+      return;
+    }
+    
+    // Check if Chrome APIs are available
+    if (!isChromeAPIAvailable()) {
+      console.warn("Extension: Chrome APIs not available. Extension may have been reloaded or context invalidated.");
       return;
     }
     
@@ -1028,51 +1143,74 @@
         let currentKey = key;
         let currentModel = model;
 
-        try {
-          const storedConfig = await chrome.storage.local.get(["url", "key", "model"]);
-          if (storedConfig.url) {
-            currentUrl = storedConfig.url;
-            url = storedConfig.url;
+        if (!isChromeAPIAvailable()) {
+          console.warn("Extension: Chrome APIs not available - using cached config");
+          // Use existing values if Chrome APIs aren't available
+          if (!currentUrl || !currentKey || !currentModel) {
+            console.warn("Extension: Missing configuration. Please configure the extension first.");
+            return;
           }
-          if (storedConfig.model) {
-            currentModel = storedConfig.model;
-            model = storedConfig.model;
-          }
-          
-          // Decrypt API key if it exists
-          if (storedConfig.key) {
-            try {
-              const decryptionResponse = await chrome.runtime.sendMessage({
-                action: "decryptApiKey",
-                encryptedApiKey: storedConfig.key
-              });
-              
-              if (decryptionResponse.error) {
-                console.error("Extension: Failed to decrypt API key:", decryptionResponse.error);
+        } else {
+          try {
+            const storedConfig = await chrome.storage.local.get(["url", "key", "model"]);
+            if (storedConfig.url) {
+              currentUrl = storedConfig.url;
+              url = storedConfig.url;
+            }
+            if (storedConfig.model) {
+              currentModel = storedConfig.model;
+              model = storedConfig.model;
+            }
+            
+            // Decrypt API key if it exists
+            if (storedConfig.key) {
+              try {
+                const decryptionResponse = await chrome.runtime.sendMessage({
+                  action: "decryptApiKey",
+                  encryptedApiKey: storedConfig.key
+                });
+                
+                if (decryptionResponse.error) {
+                  console.error("Extension: Failed to decrypt API key:", decryptionResponse.error);
+                  currentKey = storedConfig.key; // Use as-is (backward compatibility)
+                  key = storedConfig.key;
+                } else {
+                  currentKey = decryptionResponse.decrypted;
+                  key = decryptionResponse.decrypted;
+                }
+              } catch (error) {
+                const errorMsg = error?.message || String(error);
+                if (errorMsg.includes("Extension context invalidated") || 
+                    errorMsg.includes("Cannot read properties of undefined")) {
+                  console.warn("Extension: Chrome runtime API not available");
+                } else {
+                  console.error("Extension: Error decrypting API key:", error);
+                }
                 currentKey = storedConfig.key; // Use as-is (backward compatibility)
                 key = storedConfig.key;
-              } else {
-                currentKey = decryptionResponse.decrypted;
-                key = decryptionResponse.decrypted;
               }
-            } catch (error) {
-              console.error("Extension: Error decrypting API key:", error);
-              currentKey = storedConfig.key; // Use as-is (backward compatibility)
-              key = storedConfig.key;
             }
-          }
-        } catch (error) {
-          // Extension context might be invalidated - use existing values
-          if (error.message && error.message.includes("Extension context invalidated")) {
-            // Silently use existing config values
-          } else {
-            console.log("Failed to get stored config:", error);
+          } catch (error) {
+            // Extension context might be invalidated - use existing values
+            const errorMsg = error?.message || String(error);
+            if (errorMsg.includes("Extension context invalidated") || 
+                errorMsg.includes("Cannot read properties of undefined")) {
+              // Silently use existing config values
+              console.warn("Extension: Chrome storage API not available - using cached config");
+            } else {
+              console.log("Failed to get stored config:", error);
+            }
           }
         }
 
         // Check if we have valid config
         if (!currentUrl || !currentKey || !currentModel) {
           console.warn("Extension: Missing configuration. Please configure the extension first.");
+          return;
+        }
+
+        if (!isChromeAPIAvailable()) {
+          console.warn("Extension: Chrome APIs not available - cannot get selection");
           return;
         }
 
@@ -1174,12 +1312,21 @@
                           }
                           
                           // Optionally also write to input field if one was focused
-                          if (targetId && content) {
-                            await chrome.runtime.sendMessage({
-                              action: "writeText",
-                              text: content,
-                              targetId: targetId,
-                            });
+                          if (targetId && content && isChromeAPIAvailable()) {
+                            try {
+                              await chrome.runtime.sendMessage({
+                                action: "writeText",
+                                text: content,
+                                targetId: targetId,
+                              });
+                            } catch (writeError) {
+                              // Silently fail - writing to input is optional
+                              const errorMsg = writeError?.message || String(writeError);
+                              if (!errorMsg.includes("Extension context invalidated") && 
+                                  !errorMsg.includes("Cannot read properties of undefined")) {
+                                console.debug("Extension: Could not write to input field:", writeError);
+                              }
+                            }
                           }
                         }
                       }
@@ -1233,10 +1380,20 @@
             // Silently ignore if no text is selected - user might have accidentally triggered the shortcut
           }
         } catch (error) {
+          const errorMsg = error?.message || String(error);
+          
+          // Check if it's an extension context invalidated error
+          if (errorMsg.includes("Extension context invalidated") || 
+              errorMsg.includes("Cannot read properties of undefined")) {
+            console.warn("Extension: Chrome APIs not available - extension may have been reloaded");
+            isStreaming = false;
+            showResponse = false;
+            return;
+          }
+          
           console.error("Extension: Error getting AI response:", error);
           
           // Check if it's a rate limit error
-          const errorMsg = error?.message || String(error);
           if (errorMsg.includes("Rate limit exceeded")) {
             errorMessage = errorMsg;
             showError = true;
@@ -1275,10 +1432,23 @@
     // Now load configuration asynchronously
     let _storageCache = null;
 
+    // Check Chrome API availability before using
+    if (!isChromeAPIAvailable()) {
+      console.warn("Extension: Chrome APIs not available for config loading");
+      showConfig = true;
+      return;
+    }
+
     try {
       _storageCache = await chrome.storage.local.get();
     } catch (error) {
-      console.log(error);
+      const errorMsg = error?.message || String(error);
+      if (errorMsg.includes("Extension context invalidated") || 
+          errorMsg.includes("Cannot read properties of undefined")) {
+        console.warn("Extension: Chrome storage API not available - extension may have been reloaded");
+      } else {
+        console.error("Extension: Error getting config:", error);
+      }
     }
 
     if (_storageCache) {
@@ -1287,22 +1457,33 @@
       
       // Decrypt API key if it exists
       if (_storageCache.key) {
-        try {
-          const decryptionResponse = await chrome.runtime.sendMessage({
-            action: "decryptApiKey",
-            encryptedApiKey: _storageCache.key
-          });
-          
-          if (decryptionResponse.error) {
-            console.error("Extension: Failed to decrypt API key:", decryptionResponse.error);
+        if (isChromeAPIAvailable()) {
+          try {
+            const decryptionResponse = await chrome.runtime.sendMessage({
+              action: "decryptApiKey",
+              encryptedApiKey: _storageCache.key
+            });
+            
+            if (decryptionResponse.error) {
+              console.error("Extension: Failed to decrypt API key:", decryptionResponse.error);
+              // Use as-is (might be unencrypted for backward compatibility)
+              key = _storageCache.key;
+            } else {
+              key = decryptionResponse.decrypted;
+            }
+          } catch (error) {
+            const errorMsg = error?.message || String(error);
+            if (errorMsg.includes("Extension context invalidated") || 
+                errorMsg.includes("Cannot read properties of undefined")) {
+              console.warn("Extension: Chrome runtime API not available - using stored key as-is");
+            } else {
+              console.error("Extension: Error decrypting API key:", error);
+            }
             // Use as-is (might be unencrypted for backward compatibility)
             key = _storageCache.key;
-          } else {
-            key = decryptionResponse.decrypted;
           }
-        } catch (error) {
-          console.error("Extension: Error decrypting API key:", error);
-          // Use as-is (might be unencrypted for backward compatibility)
+        } else {
+          // Chrome APIs not available - use key as-is
           key = _storageCache.key;
         }
       } else {
@@ -1378,12 +1559,13 @@
         >
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <form
-            class="tlwd-text-gray-200 tlwd-w-full tlwd-p-0 tlwd-m-0"
+            class="tlwd-text-neutral-100 tlwd-w-full tlwd-p-0 tlwd-m-0"
             on:submit={initHandler}
             on:mousedown={(e) => {
               e.stopPropagation();
             }}
             autocomplete="off"
+            enctype="application/x-www-form-urlencoded"
           >
             <div class="tlwd-flex tlwd-items-center tlwd-gap-2 tlwd-w-full">
               <div class=" tlwd-flex tlwd-items-center">
@@ -1545,12 +1727,13 @@
         >
           <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
           <form
-            class="tlwd-text-gray-200 tlwd-w-full tlwd-p-0 tlwd-m-0"
+            class="tlwd-text-neutral-100 tlwd-w-full tlwd-p-0 tlwd-m-0"
             on:submit={submitHandler}
             on:mousedown={(e) => {
               e.stopPropagation();
             }}
             autocomplete="off"
+            enctype="application/x-www-form-urlencoded"
           >
             <div class="tlwd-flex tlwd-items-center tlwd-gap-2 tlwd-w-full">
               <div class=" tlwd-flex tlwd-items-center">
@@ -1681,7 +1864,7 @@
             <h3 class="tlwd-text-xl tlwd-font-semibold tlwd-text-neutral-100">AI Response</h3>
           </div>
           <button
-            class="tlwd-flex tlwd-items-center tlwd-bg-transparent tlwd-text-neutral-400 hover:tlwd-text-neutral-100 tlwd-cursor-pointer tlwd-p-1 tlwd-outline-none tlwd-border-none tlwd-transition-colors"
+            class="tlwd-flex tlwd-items-center tlwd-bg-transparent tlwd-text-neutral-300 hover:tlwd-text-neutral-100 tlwd-cursor-pointer tlwd-p-1 tlwd-outline-none tlwd-border-none tlwd-transition-colors"
             on:click={() => {
               showResponse = false;
               responseText = "";
@@ -1717,14 +1900,14 @@
           {#each conversationHistory as message, index}
             {#if message.role === "user"}
               <div class="tlwd-mb-5">
-                <div class="tlwd-text-sm tlwd-text-neutral-400 tlwd-mb-2">You:</div>
-                <div class="tlwd-text-base tlwd-text-neutral-200 tlwd-bg-gray-800/50 tlwd-rounded-lg tlwd-p-4">
+                <div class="tlwd-text-sm tlwd-text-neutral-300 tlwd-mb-2 tlwd-font-medium">You:</div>
+                <div class="tlwd-text-base tlwd-text-neutral-100 tlwd-bg-gray-800/50 tlwd-rounded-lg tlwd-p-4">
                   {message.content}
                 </div>
               </div>
             {:else if message.role === "assistant"}
               <div class="tlwd-mb-5">
-                <div class="tlwd-text-sm tlwd-text-neutral-400 tlwd-mb-2">Assistant:</div>
+                <div class="tlwd-text-sm tlwd-text-neutral-300 tlwd-mb-2 tlwd-font-medium">Assistant:</div>
                 <div class="tlwd-text-base tlwd-text-neutral-100 tlwd-leading-relaxed markdown-content">
                   {@html renderMarkdown(message.content)}
                 </div>
@@ -1735,16 +1918,16 @@
           <!-- Current streaming response (only show if streaming) -->
           {#if responseText && isStreaming}
             <div class="tlwd-mb-5">
-              <div class="tlwd-text-sm tlwd-text-neutral-400 tlwd-mb-2">Assistant:</div>
+              <div class="tlwd-text-sm tlwd-text-neutral-300 tlwd-mb-2 tlwd-font-medium">Assistant:</div>
               <div class="tlwd-text-base tlwd-text-neutral-100 tlwd-leading-relaxed markdown-content">
                 {@html renderMarkdown(responseText)}
-                <span class="tlwd-inline-block tlwd-w-2 tlwd-h-4 tlwd-bg-neutral-400 tlwd-ml-1 tlwd-animate-pulse">|</span>
+                <span class="tlwd-inline-block tlwd-w-2 tlwd-h-4 tlwd-bg-neutral-300 tlwd-ml-1 tlwd-animate-pulse">|</span>
               </div>
             </div>
           {:else if isStreaming && !responseText}
             <div class="tlwd-mb-5">
-              <div class="tlwd-text-sm tlwd-text-neutral-400 tlwd-mb-2">Assistant:</div>
-              <span class="tlwd-text-base tlwd-text-neutral-400 tlwd-italic">Waiting for response...</span>
+              <div class="tlwd-text-sm tlwd-text-neutral-300 tlwd-mb-2 tlwd-font-medium">Assistant:</div>
+              <span class="tlwd-text-base tlwd-text-neutral-300 tlwd-italic">Waiting for response...</span>
             </div>
           {/if}
         </div>
@@ -1777,6 +1960,7 @@
           <form
             on:submit|preventDefault={sendFollowUp}
             class="tlwd-flex tlwd-items-center tlwd-gap-2"
+            enctype="application/x-www-form-urlencoded"
           >
             <input
               id="open-webui-followup-input"
@@ -1798,12 +1982,12 @@
           
           <!-- Footer -->
           <div class="tlwd-mt-3 tlwd-flex tlwd-items-center tlwd-justify-between">
-            <div class="tlwd-text-sm tlwd-text-neutral-400">
+            <div class="tlwd-text-sm tlwd-text-neutral-300">
               Press Escape to close
             </div>
             <div class="tlwd-flex tlwd-items-center tlwd-gap-3">
               <button
-                class="tlwd-text-sm tlwd-text-blue-400 hover:tlwd-text-blue-300 tlwd-cursor-pointer tlwd-outline-none tlwd-border-none tlwd-bg-transparent tlwd-transition-colors tlwd-flex tlwd-items-center tlwd-gap-1"
+                class="tlwd-text-sm tlwd-text-blue-400 hover:tlwd-text-blue-300 disabled:tlwd-text-neutral-500 disabled:tlwd-opacity-50 disabled:tlwd-cursor-not-allowed tlwd-cursor-pointer tlwd-outline-none tlwd-border-none tlwd-bg-transparent tlwd-transition-colors tlwd-flex tlwd-items-center tlwd-gap-1"
                 on:click={continueInOpenWebUI}
                 type="button"
                 disabled={conversationHistory.length === 0}
